@@ -20,6 +20,7 @@ Claude Code is powerful but can execute arbitrary code on your machine. **clsecu
 ```bash
 # Download and install
 curl -fsSL https://raw.githubusercontent.com/pablopda/clsecure/main/clsecure -o clsecure
+chmod +x clsecure
 sudo install -m 755 clsecure /usr/local/bin/
 
 # Install dependencies (for namespace mode)
