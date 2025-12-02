@@ -22,10 +22,14 @@ WORKER_PROJECT="$WORKER_HOME/project"
 LOCK_DIR="/tmp/claude-secure-locks"
 LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
 
-# Isolation mode
+# Default isolation settings (can be overridden by config file and CLI args)
 ISOLATION_MODE="namespace"  # Options: user, namespace, container
 ALLOW_NETWORK=true
 ALLOW_DOCKER=false
+
+# Config file locations (XDG standard, then fallback)
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
+CONFIG_FILE_ALT="$HOME/.clsecurerc"
 
 # Colors
 RED='\033[0;31m'
@@ -44,9 +48,98 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_security() { echo -e "${CYAN}[SECURITY]${NC} $1"; }
 
+# Load configuration file
+load_config() {
+    local config_file=""
+
+    # Check for config file (XDG location first, then fallback)
+    if [ -f "$CONFIG_FILE" ]; then
+        config_file="$CONFIG_FILE"
+    elif [ -f "$CONFIG_FILE_ALT" ]; then
+        config_file="$CONFIG_FILE_ALT"
+    else
+        return 0  # No config file, use defaults
+    fi
+
+    # Parse config file (simple key=value format, ignore comments and empty lines)
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+
+        # Trim whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+
+        # Remove quotes from value if present
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value#\'}"
+        value="${value%\'}"
+
+        case "$key" in
+            mode|isolation_mode|ISOLATION_MODE)
+                if [[ "$value" =~ ^(user|namespace|container)$ ]]; then
+                    ISOLATION_MODE="$value"
+                fi
+                ;;
+            network|allow_network|ALLOW_NETWORK)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_NETWORK=true || ALLOW_NETWORK=false
+                fi
+                ;;
+            docker|allow_docker|ALLOW_DOCKER)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_DOCKER=true || ALLOW_DOCKER=false
+                fi
+                ;;
+        esac
+    done < "$config_file"
+}
+
+show_config_info() {
+    local config_file=""
+    if [ -f "$CONFIG_FILE" ]; then
+        config_file="$CONFIG_FILE"
+    elif [ -f "$CONFIG_FILE_ALT" ]; then
+        config_file="$CONFIG_FILE_ALT"
+    fi
+
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║     Configuration                      ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+
+    if [ -n "$config_file" ]; then
+        echo -e "${GREEN}Config file:${NC} $config_file"
+        echo ""
+        echo "Current contents:"
+        cat "$config_file" | sed 's/^/  /'
+    else
+        echo -e "${YELLOW}No config file found.${NC}"
+        echo ""
+        echo "Create one at: $CONFIG_FILE"
+    fi
+
+    echo ""
+    echo "Example configuration:"
+    echo ""
+    echo "  # Default isolation mode: user, namespace, or container"
+    echo "  mode = namespace"
+    echo ""
+    echo "  # Allow network access (true/false)"
+    echo "  network = true"
+    echo ""
+    echo "  # Allow Docker access (true/false)"
+    echo "  docker = false"
+    echo ""
+    exit 0
+}
+
 show_help() {
     cat << EOF
-Usage: clsecure-enhanced [OPTIONS]
+Usage: clsecure [OPTIONS]
 
 Run Claude Code with enhanced isolation (User + Namespace).
 
@@ -56,14 +149,31 @@ OPTIONS:
     --cleanup           Interactively remove worker users
     --cleanup-all       Remove ALL claude-worker users (requires confirmation)
     --mode MODE         Isolation mode: user, namespace (default), container
-    --allow-network     Allow network access (disables --net=none in firejail)
+    --allow-network     Allow network access (default: from config or true)
+    --no-network        Disable network access (--net=none in firejail)
     --allow-docker      Allow access to Docker (WARNING: reduces isolation)
+    --no-docker         Disable Docker access (default)
+    --config            Show current configuration and config file location
     --info              Show isolation details for current mode
 
 ISOLATION MODES:
     user                Basic user isolation (original clsecure behavior)
     namespace           User + Namespace (firejail) - RECOMMENDED
     container           User + Container (podman rootless) - MAXIMUM SECURITY
+
+CONFIGURATION FILE:
+    Settings can be configured in ~/.config/clsecure/config or ~/.clsecurerc
+    Command-line arguments override config file settings.
+
+    Example config file:
+        # Default isolation mode
+        mode = namespace
+
+        # Allow network access (true/false)
+        network = true
+
+        # Allow Docker access (true/false)
+        docker = false
 
 REQUIREMENTS:
     - git (must be run from a git repository)
@@ -74,26 +184,27 @@ REQUIREMENTS:
 
 EXAMPLES:
     # Run with recommended namespace isolation
-    clsecure-enhanced
+    clsecure
 
-    # Run with network access enabled (for git push, npm install, etc.)
-    clsecure-enhanced --allow-network
+    # Run with network disabled
+    clsecure --no-network
 
     # Run with Docker access (for docker-compose)
-    clsecure-enhanced --allow-docker
+    clsecure --allow-docker
 
     # Run with basic user isolation only
-    clsecure-enhanced --mode user
+    clsecure --mode user
+
+    # Show config file and current settings
+    clsecure --config
 
     # Show isolation details
-    clsecure-enhanced --info
+    clsecure --info
 
 SECURITY MODEL:
     User isolation:      Dedicated Linux user per project
     Namespace isolation: + Firejail sandbox (PID, mount, network, IPC)
     Container isolation: + Full containerization (podman rootless)
-
-See hybrid-isolation-evaluation.md for detailed security analysis.
 
 EOF
     exit 0
@@ -418,7 +529,12 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT
 
 # ------------------------------------------------------------------------------
-# Parse arguments
+# Load configuration file (before parsing CLI args)
+# ------------------------------------------------------------------------------
+load_config
+
+# ------------------------------------------------------------------------------
+# Parse arguments (CLI overrides config file)
 # ------------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -437,6 +553,9 @@ while [[ $# -gt 0 ]]; do
         --info)
             show_isolation_info
             ;;
+        --config)
+            show_config_info
+            ;;
         --mode)
             ISOLATION_MODE="$2"
             if [[ ! "$ISOLATION_MODE" =~ ^(user|namespace|container)$ ]]; then
@@ -449,8 +568,16 @@ while [[ $# -gt 0 ]]; do
             ALLOW_NETWORK=true
             shift
             ;;
+        --no-network)
+            ALLOW_NETWORK=false
+            shift
+            ;;
         --allow-docker)
             ALLOW_DOCKER=true
+            shift
+            ;;
+        --no-docker)
+            ALLOW_DOCKER=false
             shift
             ;;
         *)
