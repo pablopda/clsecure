@@ -82,6 +82,49 @@ clsecure --list
 clsecure --cleanup
 ```
 
+## Configuration & Custom Setup
+
+You can configure persistent settings and custom setup scripts in `~/.config/clsecure/config`.
+
+### Configuration File
+
+Create `~/.config/clsecure/config`:
+
+```ini
+# ~/.config/clsecure/config
+
+# Default isolation mode (user, namespace, container)
+mode = namespace
+
+# Allow network access by default
+network = true
+
+# Path to a custom setup script (executed inside the worker environment)
+setup_script = /home/user/.config/clsecure/install_private_tools.sh
+```
+
+### Custom Setup Script (Private Tools)
+
+You can use the `setup_script` hook to install private tools or configure the environment. The script runs as the worker user inside the isolated environment.
+
+**Key Feature:** If you have `gh` (GitHub CLI) installed and authenticated on your host, `clsecure` will inject your `GH_TOKEN` into the worker environment during the setup script execution. This allows you to install private tools without exposing credentials in the public codebase.
+
+**Example: `install_private_tools.sh`**
+
+```bash
+#!/bin/bash
+# ~/.config/clsecure/install_private_tools.sh
+
+# Install a private tool from GitHub using the injected GH_TOKEN
+if command -v gh &>/dev/null && [ -n "$GH_TOKEN" ]; then
+    echo "Installing private tools..."
+    # Example: Install a python script from a private repo
+    # python3 <(gh api repos/my-org/my-private-tool/contents/install.py --jq '.content' | base64 -d)
+else
+    echo "Skipping private install (GH_TOKEN missing)"
+fi
+```
+
 ## How It Works
 
 ```

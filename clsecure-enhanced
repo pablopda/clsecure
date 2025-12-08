@@ -1,5 +1,6 @@
 #!/bin/bash
 
+
 # clsecure-enhanced - Enhanced isolation with User + Namespace (Firejail)
 # Builds on the original clsecure script with additional namespace isolation
 
@@ -17,6 +18,7 @@ SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[
 WORKER_USER="${WORKER_PREFIX}-${SAFE_PROJECT_NAME}"
 WORKER_HOME="/home/$WORKER_USER"
 WORKER_PROJECT="$WORKER_HOME/project"
+SETUP_SCRIPT=""
 
 # Lock file
 LOCK_DIR="/tmp/claude-secure-locks"
@@ -25,6 +27,10 @@ LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
 # Isolation mode
 ISOLATION_MODE="namespace"  # Options: user, namespace, container
 ALLOW_NETWORK=true
+
+# Config file locations (XDG standard, then fallback)
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
+CONFIG_FILE_ALT="$HOME/.clsecurerc"
 
 # Colors
 RED='\033[0;31m'
@@ -42,6 +48,58 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_security() { echo -e "${CYAN}[SECURITY]${NC} $1"; }
+
+# Load configuration file
+load_config() {
+    local config_file=""
+
+    # Check for config file (XDG location first, then fallback)
+    if [ -f "$CONFIG_FILE" ]; then
+        config_file="$CONFIG_FILE"
+        # echo "DEBUG: Found config at $config_file"
+    elif [ -f "$CONFIG_FILE_ALT" ]; then
+        config_file="$CONFIG_FILE_ALT"
+    else
+        # echo "DEBUG: No config file found"
+        return 0  # No config file, use defaults
+    fi
+
+    # Parse config file (simple key=value format, ignore comments and empty lines)
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        # echo "DEBUG: Read line '$key=$value'"
+        # Skip comments and empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+
+        # Trim whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+
+        # Remove quotes from value if present
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value#\'}"
+        value="${value%\'}"
+
+        case "$key" in
+            mode|isolation_mode|ISOLATION_MODE)
+                if [[ "$value" =~ ^(user|namespace|container)$ ]]; then
+                    ISOLATION_MODE="$value"
+                fi
+                ;;
+            network|allow_network|ALLOW_NETWORK)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_NETWORK=true || ALLOW_NETWORK=false
+                fi
+                ;;
+            setup_script|SETUP_SCRIPT)
+                if [ -n "$value" ]; then
+                    SETUP_SCRIPT="$value"
+                fi
+                ;;
+        esac
+    done < "$config_file"
+}
 
 show_help() {
     cat << EOF
@@ -96,6 +154,7 @@ EOF
 
 show_isolation_info() {
     echo ""
+
     echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║     Isolation Configuration            ║${NC}"
     echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
@@ -174,6 +233,11 @@ show_isolation_info() {
             echo "  Device access:                Completely isolated"
             ;;
     esac
+
+    if [ -n "$SETUP_SCRIPT" ]; then
+        echo ""
+        echo -e "${GREEN}Setup Script:${NC} $SETUP_SCRIPT"
+    fi
 
     echo ""
     exit 0
@@ -405,6 +469,11 @@ cleanup_on_exit() {
     release_lock
 }
 trap cleanup_on_exit EXIT
+
+# ------------------------------------------------------------------------------
+# Load configuration file (before parsing CLI args)
+# ------------------------------------------------------------------------------
+load_config
 
 # ------------------------------------------------------------------------------
 # Parse arguments
@@ -663,6 +732,40 @@ else
     sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && npm install -g task-master-ai" || {
         log_warn "Failed to install task-master-ai. Continuing anyway..."
     }
+fi
+
+# Run setup script if configured
+if [ -n "$SETUP_SCRIPT" ]; then
+    log_step "Running setup script..."
+    if [ -f "$SETUP_SCRIPT" ]; then
+        WORKER_SETUP_SCRIPT="$WORKER_HOME/setup_script.sh"
+        sudo cp "$SETUP_SCRIPT" "$WORKER_SETUP_SCRIPT"
+        sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_SETUP_SCRIPT"
+        sudo chmod +x "$WORKER_SETUP_SCRIPT"
+        
+        # Capture GH_TOKEN if available
+        GH_TOKEN_VAL=""
+        if command -v gh &>/dev/null; then
+            GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
+        fi
+
+        log_info "Executing $SETUP_SCRIPT..."
+        if [ -n "$GH_TOKEN_VAL" ]; then
+             if sudo -u "$WORKER_USER" GH_TOKEN="$GH_TOKEN_VAL" bash -c "cd && source ~/.bashrc && $WORKER_SETUP_SCRIPT"; then
+                 log_info "Setup script executed successfully."
+             else
+                 log_warn "Setup script failed."
+             fi
+        else
+             if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && $WORKER_SETUP_SCRIPT"; then
+                 log_info "Setup script executed successfully."
+             else
+                 log_warn "Setup script failed."
+             fi
+        fi
+    else
+        log_warn "Setup script configured but not found: $SETUP_SCRIPT"
+    fi
 fi
 
 # ------------------------------------------------------------------------------
