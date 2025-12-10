@@ -816,6 +816,40 @@ else
     }
 fi
 
+# Run setup script if configured
+if [ -n "$SETUP_SCRIPT" ]; then
+    log_step "Running setup script..."
+    if [ -f "$SETUP_SCRIPT" ]; then
+        WORKER_SETUP_SCRIPT="$WORKER_HOME/setup_script.sh"
+        sudo cp "$SETUP_SCRIPT" "$WORKER_SETUP_SCRIPT"
+        sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_SETUP_SCRIPT"
+        sudo chmod +x "$WORKER_SETUP_SCRIPT"
+        
+        # Capture GH_TOKEN if available
+        GH_TOKEN_VAL=""
+        if command -v gh &>/dev/null; then
+            GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
+        fi
+
+        log_info "Executing $SETUP_SCRIPT..."
+        if [ -n "$GH_TOKEN_VAL" ]; then
+             if sudo -u "$WORKER_USER" GH_TOKEN="$GH_TOKEN_VAL" bash -c "cd && source ~/.bashrc && $WORKER_SETUP_SCRIPT"; then
+                 log_info "Setup script executed successfully."
+             else
+                 log_warn "Setup script failed."
+             fi
+        else
+             if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && $WORKER_SETUP_SCRIPT"; then
+                 log_info "Setup script executed successfully."
+             else
+                 log_warn "Setup script failed."
+             fi
+        fi
+    else
+        log_warn "Setup script configured but not found: $SETUP_SCRIPT"
+    fi
+fi
+
 # ------------------------------------------------------------------------------
 # Start Claude session with selected isolation
 # ------------------------------------------------------------------------------
