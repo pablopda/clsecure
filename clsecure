@@ -26,6 +26,7 @@ LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
 ISOLATION_MODE="namespace"  # Options: user, namespace, container
 ALLOW_NETWORK=true
 ALLOW_DOCKER=false
+INSTALL_DEPS=false
 SETUP_SCRIPT=""
 
 # Config file locations (XDG standard, then fallback)
@@ -94,6 +95,11 @@ load_config() {
                     [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_DOCKER=true || ALLOW_DOCKER=false
                 fi
                 ;;
+            install_dependencies|INSTALL_DEPS)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && INSTALL_DEPS=true || INSTALL_DEPS=false
+                fi
+                ;;
             setup_script|SETUP_SCRIPT)
                 if [ -n "$value" ]; then
                     SETUP_SCRIPT="$value"
@@ -158,7 +164,9 @@ OPTIONS:
     --allow-network     Allow network access (default: from config or true)
     --no-network        Disable network access (--net=none in firejail)
     --allow-docker      Allow access to Docker (WARNING: reduces isolation)
+    --allow-docker      Allow access to Docker (WARNING: reduces isolation)
     --no-docker         Disable Docker access (default)
+    --install-deps      Install project dependencies (npm/pip) on startup
     --config            Show current configuration and config file location
     --info              Show isolation details for current mode
 
@@ -180,6 +188,9 @@ CONFIGURATION FILE:
 
         # Allow Docker access (true/false)
         docker = false
+
+        # Install project dependencies (true/false)
+        install_dependencies = false
 
 REQUIREMENTS:
     - git (must be run from a git repository)
@@ -226,6 +237,7 @@ show_isolation_info() {
     echo -e "${GREEN}Current Mode:${NC} $ISOLATION_MODE"
     echo -e "${GREEN}Network:${NC} $([ "$ALLOW_NETWORK" = true ] && echo "Enabled" || echo "Disabled (--net=none)")"
     echo -e "${GREEN}Docker:${NC} $([ "$ALLOW_DOCKER" = true ] && echo "Enabled" || echo "Disabled")"
+    echo -e "${GREEN}Install Deps:${NC} $([ "$INSTALL_DEPS" = true ] && echo "Enabled" || echo "Disabled")"
     if [ -n "$SETUP_SCRIPT" ]; then
         echo -e "${GREEN}Setup Script:${NC} $SETUP_SCRIPT"
     fi
@@ -537,6 +549,32 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
+# Install dependencies helper
+install_project_dependencies() {
+    log_step "Installing project dependencies..."
+    
+    if [ -f "$WORKER_PROJECT/package.json" ]; then
+        log_info "Found package.json, running npm install..."
+        sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && source $WORKER_HOME/.bashrc && npm install"
+    fi
+
+    if [ -f "$WORKER_PROJECT/requirements.txt" ]; then
+        log_info "Found requirements.txt..."
+        if [ ! -d "$WORKER_PROJECT/venv" ] && [ ! -d "$WORKER_PROJECT/.venv" ]; then
+            log_info "Creating virtual environment..."
+            sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && python3 -m venv venv"
+        fi
+        
+        VENV_DIR="$WORKER_PROJECT/venv"
+        if [ -d "$WORKER_PROJECT/.venv" ]; then
+            VENV_DIR="$WORKER_PROJECT/.venv"
+        fi
+        
+        log_info "Installing pip requirements in $VENV_DIR..."
+        sudo -u "$WORKER_USER" bash -c "source '$VENV_DIR/bin/activate' && pip install -r '$WORKER_PROJECT/requirements.txt'"
+    fi
+}
+
 # ------------------------------------------------------------------------------
 # Load configuration file (before parsing CLI args)
 # ------------------------------------------------------------------------------
@@ -587,6 +625,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-docker)
             ALLOW_DOCKER=false
+            shift
+            ;;
+        --install-deps)
+            INSTALL_DEPS=true
             shift
             ;;
         *)
@@ -826,9 +868,10 @@ if [ -n "$SETUP_SCRIPT" ]; then
         sudo chmod +x "$WORKER_SETUP_SCRIPT"
         
         # Capture GH_TOKEN if available
-        GH_TOKEN_VAL=""
-        if command -v gh &>/dev/null; then
-            GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
+        # Priority: Env var -> gh auth token
+        GH_TOKEN_VAL="${GH_TOKEN:-}"
+        if [ -z "$GH_TOKEN_VAL" ] && command -v gh &>/dev/null; then
+             GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
         fi
 
         log_info "Executing $SETUP_SCRIPT..."
@@ -849,6 +892,12 @@ if [ -n "$SETUP_SCRIPT" ]; then
         log_warn "Setup script configured but not found: $SETUP_SCRIPT"
     fi
 fi
+
+# Install dependencies if requested
+if [ "$INSTALL_DEPS" = true ]; then
+    install_project_dependencies
+fi
+
 
 # ------------------------------------------------------------------------------
 # Start Claude session with selected isolation
@@ -878,7 +927,18 @@ set +e
 case $ISOLATION_MODE in
     user)
         # Original behavior: just run as worker user
-        sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
+        # Pass GH_TOKEN if available to the session too
+        GH_TOKEN_VAL="${GH_TOKEN:-}"
+        if [ -z "$GH_TOKEN_VAL" ] && command -v gh &>/dev/null; then
+             GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
+        fi
+        
+        ENV_VARS=""
+        if [ -n "$GH_TOKEN_VAL" ]; then
+            ENV_VARS="GH_TOKEN=$GH_TOKEN_VAL"
+        fi
+
+        sudo -u "$WORKER_USER" $ENV_VARS bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
         ;;
 
     namespace)

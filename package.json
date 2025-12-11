@@ -1,0 +1,6 @@
+{
+    "name": "test-clsecure-deps",
+    "dependencies": {
+        "mkdirp": "1.0.4"
+    }
+}

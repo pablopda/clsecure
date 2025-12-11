@@ -27,6 +27,7 @@ LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
 # Isolation mode
 ISOLATION_MODE="namespace"  # Options: user, namespace, container
 ALLOW_NETWORK=true
+INSTALL_DEPS=false
 
 # Config file locations (XDG standard, then fallback)
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
@@ -97,6 +98,11 @@ load_config() {
                     SETUP_SCRIPT="$value"
                 fi
                 ;;
+            install_dependencies|INSTALL_DEPS)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && INSTALL_DEPS=true || INSTALL_DEPS=false
+                fi
+                ;;
         esac
     done < "$config_file"
 }
@@ -114,6 +120,7 @@ OPTIONS:
     --cleanup-all       Remove ALL claude-worker users (requires confirmation)
     --mode MODE         Isolation mode: user, namespace (default), container
     --allow-network     Allow network access (disables --net=none in firejail)
+    --install-deps      Install project dependencies (npm/pip) on startup
     --info              Show isolation details for current mode
 
 ISOLATION MODES:
@@ -162,6 +169,7 @@ show_isolation_info() {
 
     echo -e "${GREEN}Current Mode:${NC} $ISOLATION_MODE"
     echo -e "${GREEN}Network:${NC} $([ "$ALLOW_NETWORK" = true ] && echo "Enabled" || echo "Disabled (--net=none)")"
+    echo -e "${GREEN}Install Deps:${NC} $([ "$INSTALL_DEPS" = true ] && echo "Enabled" || echo "Disabled")"
     echo ""
 
     case $ISOLATION_MODE in
@@ -470,6 +478,32 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
+# Install dependencies helper
+install_project_dependencies() {
+    log_step "Installing project dependencies..."
+    
+    if [ -f "$WORKER_PROJECT/package.json" ]; then
+        log_info "Found package.json, running npm install..."
+        sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && source $WORKER_HOME/.bashrc && npm install"
+    fi
+
+    if [ -f "$WORKER_PROJECT/requirements.txt" ]; then
+        log_info "Found requirements.txt..."
+        if [ ! -d "$WORKER_PROJECT/venv" ] && [ ! -d "$WORKER_PROJECT/.venv" ]; then
+            log_info "Creating virtual environment..."
+            sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && python3 -m venv venv"
+        fi
+        
+        VENV_DIR="$WORKER_PROJECT/venv"
+        if [ -d "$WORKER_PROJECT/.venv" ]; then
+            VENV_DIR="$WORKER_PROJECT/.venv"
+        fi
+        
+        log_info "Installing pip requirements in $VENV_DIR..."
+        sudo -u "$WORKER_USER" bash -c "source '$VENV_DIR/bin/activate' && pip install -r '$WORKER_PROJECT/requirements.txt'"
+    fi
+}
+
 # ------------------------------------------------------------------------------
 # Load configuration file (before parsing CLI args)
 # ------------------------------------------------------------------------------
@@ -505,6 +539,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --allow-network)
             ALLOW_NETWORK=true
+            shift
+            ;;
+        --install-deps)
+            INSTALL_DEPS=true
             shift
             ;;
         *)
@@ -744,9 +782,10 @@ if [ -n "$SETUP_SCRIPT" ]; then
         sudo chmod +x "$WORKER_SETUP_SCRIPT"
         
         # Capture GH_TOKEN if available
-        GH_TOKEN_VAL=""
-        if command -v gh &>/dev/null; then
-            GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
+        # Priority: Env var -> gh auth token
+        GH_TOKEN_VAL="${GH_TOKEN:-}"
+        if [ -z "$GH_TOKEN_VAL" ] && command -v gh &>/dev/null; then
+             GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
         fi
 
         log_info "Executing $SETUP_SCRIPT..."
@@ -767,6 +806,12 @@ if [ -n "$SETUP_SCRIPT" ]; then
         log_warn "Setup script configured but not found: $SETUP_SCRIPT"
     fi
 fi
+
+# Install dependencies if requested
+if [ "$INSTALL_DEPS" = true ]; then
+    install_project_dependencies
+fi
+
 
 # ------------------------------------------------------------------------------
 # Start Claude session with selected isolation
@@ -796,7 +841,18 @@ set +e
 case $ISOLATION_MODE in
     user)
         # Original behavior: just run as worker user
-        sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
+        # Pass GH_TOKEN if available
+        GH_TOKEN_VAL="${GH_TOKEN:-}"
+        if [ -z "$GH_TOKEN_VAL" ] && command -v gh &>/dev/null; then
+             GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
+        fi
+        
+        ENV_VARS=""
+        if [ -n "$GH_TOKEN_VAL" ]; then
+            ENV_VARS="GH_TOKEN=$GH_TOKEN_VAL"
+        fi
+
+        sudo -u "$WORKER_USER" $ENV_VARS bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
         ;;
 
     namespace)
@@ -804,7 +860,31 @@ case $ISOLATION_MODE in
         NETWORK_FLAG=""
         [ "$ALLOW_NETWORK" = false ] && NETWORK_FLAG="--net=none"
 
-        sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $NETWORK_FLAG --private-dev --private-tmp --noroot --caps.drop=all --seccomp -- $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
+        DOCKER_FLAGS=""
+        if [ "$ALLOW_DOCKER" = true ]; then
+            # Docker access requires disabling User Namespace (--noroot) to preserve group permissions
+            # and ensuring the socket is accessible
+            DOCKER_FLAGS="--noblacklist=/var/run/docker.sock --noblacklist=/run/docker.sock"
+        fi
+        
+        # Pass GH_TOKEN to firejail if available
+        GH_TOKEN_VAL="${GH_TOKEN:-}"
+        if [ -z "$GH_TOKEN_VAL" ] && command -v gh &>/dev/null; then
+             GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
+        fi
+        
+        ENV_FLAGS=""
+        if [ -n "$GH_TOKEN_VAL" ]; then
+            ENV_FLAGS="--env=GH_TOKEN=$GH_TOKEN_VAL"
+        fi
+
+        # If Docker is allowed, we must remove --noroot as it conflicts with Docker's group permissions
+        NOROOT_FLAG="--noroot"
+        if [ -n "$DOCKER_FLAGS" ]; then
+            NOROOT_FLAG=""
+        fi
+
+        sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $NETWORK_FLAG $ENV_FLAGS --private-dev --private-tmp $DOCKER_FLAGS $NOROOT_FLAG --caps.drop=all --seccomp -- $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
         ;;
 
     container)
