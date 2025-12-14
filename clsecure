@@ -50,6 +50,92 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_security() { echo -e "${CYAN}[SECURITY]${NC} $1"; }
 
+# Sanitize project-local MCP config so it works under worker users.
+# Claude often stores absolute tool paths (e.g. /home/<user>/.nvm/.../npx) in `.mcp.json`,
+# which breaks when the repo is copied to a different Linux user/home.
+sanitize_mcp_config() {
+    local mcp_file="$WORKER_PROJECT/.mcp.json"
+
+    [ -f "$mcp_file" ] || return 0
+
+    if ! command -v python3 &>/dev/null; then
+        log_warn "Found .mcp.json but python3 is unavailable; skipping MCP path sanitization."
+        return 0
+    fi
+
+    log_step "Sanitizing MCP config paths (.mcp.json)..."
+
+    # Run as the worker user so ownership/permissions stay correct.
+    sudo -u "$WORKER_USER" WORKER_PROJECT="$WORKER_PROJECT" python3 - <<'PY'
+import json
+import os
+import pathlib
+
+mcp_path = pathlib.Path(os.environ["WORKER_PROJECT"]) / ".mcp.json"
+
+try:
+    raw = mcp_path.read_text(encoding="utf-8")
+except FileNotFoundError:
+    raise SystemExit(0)
+
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    # Don't brick the user's file; just leave it untouched.
+    raise SystemExit(0)
+
+servers = data.get("mcpServers")
+if not isinstance(servers, dict):
+    raise SystemExit(0)
+
+def should_portabilize(cmd: str) -> bool:
+    if not cmd:
+        return False
+    # Common "copied-from-host-user" patterns. We keep this conservative to avoid
+    # breaking legitimate custom absolute binaries.
+    if "/.nvm/" in cmd:
+        return True
+    if "/.asdf/" in cmd:
+        return True
+    if "/.volta/" in cmd:
+        return True
+    return False
+
+portable_basenames = {"npx", "node", "python", "python3", "uvx", "pipx"}
+changed = False
+
+for name, cfg in servers.items():
+    if not isinstance(cfg, dict):
+        continue
+    cmd = cfg.get("command")
+    if not isinstance(cmd, str):
+        continue
+
+    base = os.path.basename(cmd)
+    if base in portable_basenames and (os.path.isabs(cmd) and should_portabilize(cmd)):
+        cfg["command"] = base
+        changed = True
+
+if not changed:
+    raise SystemExit(0)
+
+mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+PY
+}
+
+check_worker_mcp_runtime() {
+    # MCP servers that run via npx need node+npx available to the worker user.
+    if sudo -u "$WORKER_USER" bash -c "source '$WORKER_HOME/.bashrc' >/dev/null 2>&1; command -v npx >/dev/null 2>&1"; then
+        return 0
+    fi
+
+    log_warn "Worker cannot find 'npx' on PATH. MCP servers that use npx will fail to start."
+    log_info "Fix options (pick one):"
+    log_info "  - Install Node globally (recommended with this setup): sudo -H -u linuxbrew /home/linuxbrew/.linuxbrew/bin/brew install node"
+    log_info "  - Or install Node system-wide: sudo apt-get install -y nodejs npm"
+    log_info "  - Or use clsecure's setup_script hook to install Node inside the worker user (e.g. via nvm in \$HOME)"
+}
+
 # Load configuration file
 load_config() {
     local config_file=""
@@ -788,6 +874,9 @@ fi
 sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME"
 sudo chmod 755 "$WORKER_HOME"
 
+# Make sure project-local MCP config is portable across worker users
+sanitize_mcp_config
+
 # Copy configurations
 log_step "Setting up configurations..."
 
@@ -832,6 +921,9 @@ else
 fi
 
 sudo -u "$WORKER_USER" mkdir -p "$WORKER_HOME/.npm-global"
+
+# Warn early if MCP runtime is missing
+check_worker_mcp_runtime
 
 # Verify Claude CLI
 log_step "Checking Claude CLI..."

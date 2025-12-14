@@ -107,6 +107,23 @@ setup_script = /home/user/.config/clsecure/install_private_tools.sh
 
 You can use the `setup_script` hook to install private tools or configure the environment. The script runs as the worker user inside the isolated environment.
 
+### MCP servers (Context7, etc.) and Node/NPM
+
+Some MCP servers are started via `npx` (for example `@upstash/context7-mcp`). For these to work inside the worker user:
+
+- Your project `.mcp.json` should use **portable commands** like `npx` (not absolute paths like `/home/user/.nvm/.../npx`).
+- The worker environment must have **Node + npx available on `PATH`**.
+
+Recommended setup for multi-user portability:
+
+- Install Node in shared Linuxbrew (works well with `clsecure` since workers already `eval "$(brew shellenv)"`):
+  - `sudo -H -u linuxbrew /home/linuxbrew/.linuxbrew/bin/brew install node`
+
+Alternative options:
+
+- Install system-wide Node: `sudo apt-get install -y nodejs npm`
+- Or install Node per-worker using the `setup_script` hook (e.g. using `nvm` inside the worker user’s `$HOME`)
+
 **Key Feature:** If you have `gh` (GitHub CLI) installed and authenticated on your host, `clsecure` will inject your `GH_TOKEN` into the worker environment during the setup script execution. This allows you to install private tools without exposing credentials in the public codebase.
 
 **Example: `install_private_tools.sh`**
