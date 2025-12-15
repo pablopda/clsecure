@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# clsecure-enhanced - Enhanced isolation with User + Namespace (Firejail)
-# Builds on the original clsecure script with additional namespace isolation
+# clsecure - Enhanced isolation with User + Namespace (Firejail)
+# Runs Claude Code in an isolated environment with user and namespace isolation
 
 set -euo pipefail
 
@@ -12,8 +12,29 @@ WORKER_PREFIX="claude-worker"
 CURRENT_DIR=$(pwd)
 PROJECT_NAME=$(basename "$CURRENT_DIR")
 
-# Sanitize project name for username (lowercase, alphanumeric + dash, max 20 chars)
-SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-20)
+# Sanitize project name for username (lowercase, alphanumeric + dash)
+# Add hash suffix to avoid collisions when project names are truncated
+# Linux username limit is 32 chars: "claude-worker" (14 chars) + "-" (1) + project (max 17 chars) = 32 total
+PROJECT_NAME_SANITIZED=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+# Generate short hash from full directory path to ensure uniqueness
+# Use full path to handle projects with same name in different locations
+if command -v sha256sum &>/dev/null; then
+    PROJECT_HASH=$(echo -n "$CURRENT_DIR" | sha256sum | cut -c1-6)
+elif command -v shasum &>/dev/null; then
+    PROJECT_HASH=$(echo -n "$CURRENT_DIR" | shasum -a 256 | cut -c1-6)
+else
+    # Fallback: use first 6 chars of md5sum if available, otherwise use simple hash
+    if command -v md5sum &>/dev/null; then
+        PROJECT_HASH=$(echo -n "$CURRENT_DIR" | md5sum | cut -c1-6)
+    else
+        # Last resort: use first 6 chars of sanitized path
+        PROJECT_HASH=$(echo -n "$CURRENT_DIR" | tr -cd 'a-z0-9' | cut -c1-6)
+        [ -z "$PROJECT_HASH" ] && PROJECT_HASH="000000"
+    fi
+fi
+# Combine: first 10 chars of name + dash + 6 char hash = 17 chars total
+# "claude-worker" (14) + "-" (1) + project (17) = 32 chars (fits Linux username limit)
+SAFE_PROJECT_NAME="${PROJECT_NAME_SANITIZED:0:10}-${PROJECT_HASH}"
 WORKER_USER="${WORKER_PREFIX}-${SAFE_PROJECT_NAME}"
 WORKER_HOME="/home/$WORKER_USER"
 WORKER_PROJECT="$WORKER_HOME/project"
@@ -66,60 +87,75 @@ sanitize_mcp_config() {
     log_step "Sanitizing MCP config paths (.mcp.json)..."
 
     # Run as the worker user so ownership/permissions stay correct.
-    sudo -u "$WORKER_USER" WORKER_PROJECT="$WORKER_PROJECT" python3 - <<'PY'
+    # Wrap in error handling so failures don't crash the main script
+    sudo -u "$WORKER_USER" WORKER_PROJECT="$WORKER_PROJECT" python3 - <<'PY' || true
 import json
 import os
 import pathlib
-
-mcp_path = pathlib.Path(os.environ["WORKER_PROJECT"]) / ".mcp.json"
-
-try:
-    raw = mcp_path.read_text(encoding="utf-8")
-except FileNotFoundError:
-    raise SystemExit(0)
+import sys
 
 try:
-    data = json.loads(raw)
-except json.JSONDecodeError:
-    # Don't brick the user's file; just leave it untouched.
-    raise SystemExit(0)
+    mcp_path = pathlib.Path(os.environ["WORKER_PROJECT"]) / ".mcp.json"
 
-servers = data.get("mcpServers")
-if not isinstance(servers, dict):
-    raise SystemExit(0)
+    try:
+        raw = mcp_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        sys.exit(0)
 
-def should_portabilize(cmd: str) -> bool:
-    if not cmd:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Don't brick the user's file; just leave it untouched.
+        sys.exit(0)
+
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        sys.exit(0)
+
+    def should_portabilize(cmd: str) -> bool:
+        if not cmd:
+            return False
+        # Common "copied-from-host-user" patterns. We keep this conservative to avoid
+        # breaking legitimate custom absolute binaries.
+        if "/.nvm/" in cmd:
+            return True
+        if "/.asdf/" in cmd:
+            return True
+        if "/.volta/" in cmd:
+            return True
         return False
-    # Common "copied-from-host-user" patterns. We keep this conservative to avoid
-    # breaking legitimate custom absolute binaries.
-    if "/.nvm/" in cmd:
-        return True
-    if "/.asdf/" in cmd:
-        return True
-    if "/.volta/" in cmd:
-        return True
-    return False
 
-portable_basenames = {"npx", "node", "python", "python3", "uvx", "pipx"}
-changed = False
+    portable_basenames = {"npx", "node", "python", "python3", "uvx", "pipx"}
+    changed = False
 
-for name, cfg in servers.items():
-    if not isinstance(cfg, dict):
-        continue
-    cmd = cfg.get("command")
-    if not isinstance(cmd, str):
-        continue
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        cmd = cfg.get("command")
+        if not isinstance(cmd, str):
+            continue
 
-    base = os.path.basename(cmd)
-    if base in portable_basenames and (os.path.isabs(cmd) and should_portabilize(cmd)):
-        cfg["command"] = base
-        changed = True
+        base = os.path.basename(cmd)
+        if base in portable_basenames and (os.path.isabs(cmd) and should_portabilize(cmd)):
+            cfg["command"] = base
+            changed = True
 
-if not changed:
-    raise SystemExit(0)
+    if not changed:
+        sys.exit(0)
 
-mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    try:
+        mcp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except (OSError, PermissionError, IOError):
+        # Best-effort operation: if write fails (permission denied, disk full, etc.), 
+        # exit successfully so the main script continues
+        sys.exit(0)
+    except Exception:
+        # Catch any other unexpected errors
+        sys.exit(0)
+except Exception:
+    # Top-level exception handler: catch any unexpected errors and exit successfully
+    # This is a best-effort operation and should not crash the main script
+    sys.exit(0)
 PY
 }
 
@@ -134,6 +170,120 @@ check_worker_mcp_runtime() {
     log_info "  - Install Node globally (recommended with this setup): sudo -H -u linuxbrew /home/linuxbrew/.linuxbrew/bin/brew install node"
     log_info "  - Or install Node system-wide: sudo apt-get install -y nodejs npm"
     log_info "  - Or use clsecure's setup_script hook to install Node inside the worker user (e.g. via nvm in \$HOME)"
+}
+
+sanitize_worker_claude_home_paths() {
+    # After copying ~/.claude from the host user to the worker, rewrite any absolute
+    # host-home paths (e.g. /home/arkat/...) to the worker home. Some Claude settings,
+    # including skill/config locations, can be stored as absolute paths.
+    local claude_dir="$WORKER_HOME/.claude"
+    local host_home="$HOME"
+    local worker_home="$WORKER_HOME"
+
+    [ -d "$claude_dir" ] || return 0
+
+    if ! command -v python3 &>/dev/null; then
+        log_warn "python3 unavailable; skipping Claude config path sanitization."
+        return 0
+    fi
+
+    log_step "Sanitizing Claude config paths (~/.claude)..."
+
+    # Wrap in error handling so failures don't crash the main script
+    sudo -u "$WORKER_USER" HOST_HOME="$host_home" WORKER_HOME="$worker_home" CLAUDE_DIR="$claude_dir" python3 - <<'PY' || true
+import os
+import pathlib
+import re
+import sys
+
+try:
+    host_home = os.environ["HOST_HOME"]
+    worker_home = os.environ["WORKER_HOME"]
+    claude_dir = pathlib.Path(os.environ["CLAUDE_DIR"])
+
+    def is_probably_text(b: bytes) -> bool:
+        # NUL byte is a strong signal of binary
+        return b.find(b"\x00") == -1
+
+    def replace_path_safely(text: str, old_path: str, new_path: str) -> str:
+        """Replace old_path with new_path only when it appears as a standalone file path.
+        
+        This avoids false positives in URLs, usernames, or other non-path contexts.
+        Matches when old_path is:
+        - At start of string or preceded by: whitespace, quotes, =, :, [, {
+        - Followed by: / (path continuation), end of string, whitespace, quotes, comma, }, ]
+        """
+        # Escape special regex characters in the path
+        escaped_old = re.escape(old_path)
+        # Pattern: match path when it appears in path-like context
+        # Preceded by start/whitespace/quotes/operators, followed by / or end/whitespace/punctuation
+        pattern = r'(^|[\s"\'=:\[{])' + escaped_old + r'(/|$|[\s"\'},])'
+        
+        def replacer(match):
+            prefix = match.group(1)
+            suffix = match.group(2)
+            # If suffix is /, preserve it; otherwise it's end/whitespace/punctuation (preserve as-is)
+            if suffix == '/':
+                return prefix + new_path + '/'
+            elif suffix == '':
+                # End of string
+                return prefix + new_path
+            else:
+                # Whitespace or punctuation - preserve it
+                return prefix + new_path + suffix
+        
+        return re.sub(pattern, replacer, text)
+
+    changed_files = 0
+
+    for p in claude_dir.rglob("*"):
+        if not p.is_file():
+            continue
+
+        try:
+            st = p.stat()
+        except FileNotFoundError:
+            continue
+
+        # Avoid large/unexpected files
+        if st.st_size > 1024 * 1024:
+            continue
+
+        try:
+            raw = p.read_bytes()
+        except (OSError, FileNotFoundError):
+            continue
+
+        if not is_probably_text(raw):
+            continue
+
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+
+        if host_home not in text:
+            continue
+
+        new_text = replace_path_safely(text, host_home, worker_home)
+        if new_text != text:
+            try:
+                p.write_text(new_text, encoding="utf-8")
+                changed_files += 1
+            except (OSError, PermissionError, IOError):
+                # Best-effort operation: skip this file but continue processing others
+                continue
+            except Exception:
+                # Catch any other unexpected errors for this file
+                continue
+
+    # Always exit successfully - this is a best-effort operation
+    sys.exit(0)
+except Exception:
+    # Top-level exception handler: catch any unexpected errors and exit successfully
+    # This is a best-effort operation and should not crash the main script
+    sys.exit(0)
+PY
 }
 
 # Load configuration file
@@ -249,7 +399,6 @@ OPTIONS:
     --mode MODE         Isolation mode: user, namespace (default), container
     --allow-network     Allow network access (default: from config or true)
     --no-network        Disable network access (--net=none in firejail)
-    --allow-docker      Allow access to Docker (WARNING: reduces isolation)
     --allow-docker      Allow access to Docker (WARNING: reduces isolation)
     --no-docker         Disable Docker access (default)
     --install-deps      Install project dependencies (npm/pip) on startup
@@ -614,16 +763,42 @@ acquire_lock() {
     mkdir -p "$LOCK_DIR" 2>/dev/null || sudo mkdir -p "$LOCK_DIR"
     sudo chmod 1777 "$LOCK_DIR" 2>/dev/null || true
 
-    if [ -f "$LOCK_FILE" ]; then
-        local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    # Use flock for atomic lock acquisition to prevent race conditions
+    # Try to acquire lock with timeout of 0 (non-blocking)
+    if command -v flock &>/dev/null; then
+        # Use a temporary file descriptor to capture subshell exit code
+        # The subshell's exit code determines if we got the lock
+        if ! (
+            flock -n 9 || exit 1
+            # Check if existing lock file has a valid process
+            if [ -f "$LOCK_FILE" ]; then
+                local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    exit 1
+                fi
+                rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE"
+            fi
+            # Write our PID to lock file
+            echo $$ > "$LOCK_FILE" 2>/dev/null || echo $$ | sudo tee "$LOCK_FILE" > /dev/null
+            exit 0
+        ) 9>"$LOCK_FILE"; then
+            # Subshell exited with non-zero (lock failed)
             return 1
         fi
-        rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE"
+        # Subshell exited with zero (lock acquired)
+        return 0
+    else
+        # Fallback to original method if flock not available
+        if [ -f "$LOCK_FILE" ]; then
+            local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                return 1
+            fi
+            rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE"
+        fi
+        echo $$ > "$LOCK_FILE" 2>/dev/null || echo $$ | sudo tee "$LOCK_FILE" > /dev/null
+        return 0
     fi
-
-    echo $$ > "$LOCK_FILE" 2>/dev/null || echo $$ | sudo tee "$LOCK_FILE" > /dev/null
-    return 0
 }
 
 release_lock() {
@@ -641,7 +816,7 @@ install_project_dependencies() {
     
     if [ -f "$WORKER_PROJECT/package.json" ]; then
         log_info "Found package.json, running npm install..."
-        sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && source $WORKER_HOME/.bashrc && npm install"
+        sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && source \"$WORKER_HOME/.bashrc\" && npm install"
     fi
 
     if [ -f "$WORKER_PROJECT/requirements.txt" ]; then
@@ -786,7 +961,7 @@ log_step "Checking for existing session..."
 
 if ! acquire_lock; then
     log_error "A session for '$PROJECT_NAME' is already running!"
-    log_info "Use 'clsecure-enhanced --list' to see active sessions."
+    log_info "Use 'clsecure --list' to see active sessions."
     exit 1
 fi
 
@@ -801,9 +976,10 @@ else
     log_info "User already exists."
 fi
 
-# Add to docker group if docker exists
-if command -v docker &>/dev/null; then
+# Add to docker group if docker exists and docker access is allowed
+if command -v docker &>/dev/null && [ "$ALLOW_DOCKER" = true ]; then
     if ! groups "$WORKER_USER" 2>/dev/null | grep -q '\bdocker\b'; then
+        log_warn "Adding worker to docker group (grants root-equivalent access)"
         log_info "Adding to docker group..."
         sudo usermod -aG docker "$WORKER_USER"
     fi
@@ -849,10 +1025,28 @@ fi
 if [ "$SKIP_COPY" = false ]; then
     log_step "Setting up project files..."
 
+    # Check available disk space before cloning
+    REQUIRED_SPACE_MB=1000  # Estimate: 1GB minimum
+    if command -v df &>/dev/null; then
+        AVAILABLE_SPACE=$(df -m "$WORKER_HOME" 2>/dev/null | tail -1 | awk '{print $4}' || echo "0")
+        if [ "$AVAILABLE_SPACE" -lt "$REQUIRED_SPACE_MB" ] 2>/dev/null; then
+            log_error "Insufficient disk space (need ${REQUIRED_SPACE_MB}MB, have ${AVAILABLE_SPACE}MB)"
+            log_info "Free up space or use a different location"
+            release_lock
+            exit 1
+        fi
+    fi
+
     sudo rm -rf "$WORKER_PROJECT" 2>/dev/null || true
 
     log_info "Cloning repository (with full git history)..."
-    sudo git clone --no-hardlinks --quiet --recurse-submodules "$CURRENT_DIR" "$WORKER_PROJECT"
+    # Clone without submodules to avoid SSH key requirements for worker user
+    # We'll copy submodules from the source directory instead
+    if ! sudo git clone --no-hardlinks --quiet "$CURRENT_DIR" "$WORKER_PROJECT"; then
+        log_error "Failed to clone repository"
+        release_lock
+        exit 1
+    fi
 
     log_info "Syncing working directory..."
     sudo rsync -a \
@@ -867,6 +1061,41 @@ if [ "$SKIP_COPY" = false ]; then
         --exclude='.next' \
         --exclude='target' \
         "$CURRENT_DIR/" "$WORKER_PROJECT/"
+
+    # Copy submodules from source if they exist
+    # This avoids needing SSH keys since we're copying from the already-cloned source
+    if [ -f "$CURRENT_DIR/.gitmodules" ] && [ -d "$CURRENT_DIR/.git/modules" ]; then
+        log_info "Copying submodules from source..."
+        
+        # Copy .git/modules directory (contains submodule git repositories)
+        if ! sudo cp -r "$CURRENT_DIR/.git/modules" "$WORKER_PROJECT/.git/modules" 2>/dev/null; then
+            log_warn "Failed to copy submodules - they may not work correctly"
+        fi
+        
+        # Fix .git pointers in submodule directories to point to local .git/modules
+        # Use git config to properly read submodule paths (more robust than parsing .gitmodules)
+        # Use process substitution to avoid subshell issues
+        while IFS= read -r line; do
+            # Line format: "submodule.<name>.path <path>"
+            # Extract path value (everything after the FIRST space, not last)
+            # Use read with IFS to split on first space only
+            IFS=' ' read -r _ submodule_path <<< "$line"
+            # Trim leading/trailing whitespace
+            submodule_path="${submodule_path#"${submodule_path%%[![:space:]]*}"}"
+            submodule_path="${submodule_path%"${submodule_path##*[![:space:]]}"}"
+            
+            if [ -n "$submodule_path" ] && [ -d "$WORKER_PROJECT/$submodule_path" ]; then
+                # Git stores submodules in .git/modules using the path name
+                gitdir_path="$WORKER_PROJECT/.git/modules/$submodule_path"
+                if [ -d "$gitdir_path" ]; then
+                    # Remove existing .git file or directory
+                    sudo rm -rf "$WORKER_PROJECT/$submodule_path/.git" 2>/dev/null || true
+                    # Create .git file pointing to .git/modules
+                    echo "gitdir: $gitdir_path" | sudo tee "$WORKER_PROJECT/$submodule_path/.git" > /dev/null
+                fi
+            fi
+        done < <(git config --file "$CURRENT_DIR/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+    fi
 
     log_info "Project ready at $WORKER_PROJECT"
 fi
@@ -884,18 +1113,20 @@ if [ -d "$HOME/.claude" ]; then
     sudo mkdir -p "$WORKER_HOME/.claude"
     sudo cp -r "$HOME/.claude/." "$WORKER_HOME/.claude/" 2>/dev/null || true
     sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude"
+    sanitize_worker_claude_home_paths
 fi
 
 GIT_USER_NAME="$(git config user.name 2>/dev/null || echo "")"
 GIT_USER_EMAIL="$(git config user.email 2>/dev/null || echo "")"
 
 if [ -n "$GIT_USER_NAME" ] || [ -n "$GIT_USER_EMAIL" ]; then
-    sudo tee "$WORKER_HOME/.gitconfig" > /dev/null << GITEOF
-[user]
-    name = $GIT_USER_NAME
-    email = $GIT_USER_EMAIL
-GITEOF
-    sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.gitconfig"
+    # Use git config command to safely set values (avoids injection risk)
+    if [ -n "$GIT_USER_NAME" ]; then
+        sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.name "$GIT_USER_NAME"
+    fi
+    if [ -n "$GIT_USER_EMAIL" ]; then
+        sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.email "$GIT_USER_EMAIL"
+    fi
 fi
 
 # Setup shell environment
@@ -1025,12 +1256,12 @@ case $ISOLATION_MODE in
              GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
         fi
         
-        ENV_VARS=""
+        # Use env command to safely pass environment variables (avoids command injection)
         if [ -n "$GH_TOKEN_VAL" ]; then
-            ENV_VARS="GH_TOKEN=$GH_TOKEN_VAL"
+            sudo -u "$WORKER_USER" env GH_TOKEN="$GH_TOKEN_VAL" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
+        else
+            sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
         fi
-
-        sudo -u "$WORKER_USER" $ENV_VARS bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
         ;;
 
     namespace)
@@ -1078,7 +1309,8 @@ echo ""
 sudo -u "$WORKER_USER" git -C "$WORKER_PROJECT" fetch origin 2>/dev/null || true
 
 WORKER_COMMITS=$(sudo -u "$WORKER_USER" git -C "$WORKER_PROJECT" log --oneline origin/$ORIGINAL_BRANCH..HEAD 2>/dev/null || echo "")
-NUM_COMMITS=$(echo "$WORKER_COMMITS" | grep -v "^$" | wc -l)
+# Count commits using grep -c (more accurate than wc -l which counts newlines)
+NUM_COMMITS=$(echo "$WORKER_COMMITS" | grep -c . 2>/dev/null || echo 0)
 
 # 2. Check for UNCOMMITTED changes
 WORKER_CHANGES=$(sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && git status --porcelain" 2>/dev/null || echo "")
@@ -1108,14 +1340,15 @@ fi
 if [ -n "$WORKER_CHANGES" ]; then
     echo -e "${CYAN}Uncommitted changes:${NC}"
     echo "$WORKER_CHANGES" | head -10
-    [ $(echo "$WORKER_CHANGES" | wc -l) -gt 10 ] && echo "... and more"
+    CHANGE_COUNT=$(echo "$WORKER_CHANGES" | grep -c . 2>/dev/null || echo 0)
+    [ "$CHANGE_COUNT" -gt 10 ] && echo "... and more"
 fi
 echo ""
 
 echo "Options:"
 echo "  1) Create branch and import ALL work (commits + changes)"
 echo "  2) Discard changes and remove user"
-echo "  3) Keep for later (resume with clsecure-enhanced)"
+echo "  3) Keep for later (resume with clsecure)"
 echo ""
 read -p "Choose (1/2/3): " OPTION
 
@@ -1127,7 +1360,8 @@ case $OPTION in
         read -p "Branch name [$DEFAULT_BRANCH]: " BRANCH_NAME
         BRANCH_NAME=${BRANCH_NAME:-$DEFAULT_BRANCH}
         
-        if ! echo "$BRANCH_NAME" | grep -qE '^[a-zA-Z0-9/_-]+$'; then
+        # Use bash built-in pattern matching instead of echo | grep (more efficient)
+        if [[ ! "$BRANCH_NAME" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
             log_error "Invalid branch name."
             exit 1
         fi
@@ -1146,6 +1380,8 @@ case $OPTION in
             
             # Ensure we can read the worker's git objects
             # We grant read access to others temporarily for the .git directory
+            # Store original directory permissions to restore later (only for .git directory itself)
+            OLD_GIT_DIR_PERMS=$(stat -c "%a" "$WORKER_PROJECT/.git" 2>/dev/null || echo "")
             sudo chmod -R o+rX "$WORKER_PROJECT/.git"
             
             # Stash any local changes (including untracked files) to avoid merge conflicts
@@ -1183,6 +1419,22 @@ case $OPTION in
                     git stash pop
                 fi
                 exit 1
+            fi
+            
+            # Restore original git permissions for security
+            # Restore directory permissions to .git directory itself, then remove world access from contents
+            if [ -n "$OLD_GIT_DIR_PERMS" ]; then
+                # Restore directory permissions to .git itself (not recursive)
+                sudo chmod "$OLD_GIT_DIR_PERMS" "$WORKER_PROJECT/.git" 2>/dev/null || true
+                # Remove world read access from all files and directories inside .git
+                # Use find to apply different permissions to files vs directories
+                sudo find "$WORKER_PROJECT/.git" -type f -exec chmod o-r {} \; 2>/dev/null || true
+                sudo find "$WORKER_PROJECT/.git" -type d -exec chmod o-rX {} \; 2>/dev/null || true
+            else
+                # Default to removing world read access if we don't know original perms
+                # Remove world read from files, world read+execute from directories
+                sudo find "$WORKER_PROJECT/.git" -type f -exec chmod o-r {} \; 2>/dev/null || true
+                sudo find "$WORKER_PROJECT/.git" -type d -exec chmod o-rX {} \; 2>/dev/null || true
             fi
         fi
         
@@ -1247,7 +1499,7 @@ case $OPTION in
         
     3)
         log_info "Keeping user '$WORKER_USER' for later."
-        echo "Resume by running 'clsecure-enhanced' from the same project."
+        echo "Resume by running 'clsecure' from the same project."
         ;;
 esac
 
