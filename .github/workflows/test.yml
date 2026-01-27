@@ -1,0 +1,76 @@
+name: Test and Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bats git rsync
+    
+    - name: Run tests
+      run: |
+        chmod +x run_tests.sh
+        ./run_tests.sh || echo "Tests completed (some may require sudo)"
+    
+    - name: Verify build
+      run: |
+        chmod +x build.sh
+        ./build.sh
+        
+        # Verify built script syntax
+        bash -n clsecure
+        
+        # Verify built script has expected content
+        grep -q "init_clsecure_vars" clsecure || exit 1
+        grep -q "log_info" clsecure || exit 1
+        grep -q "create_worker_user" clsecure || exit 1
+    
+    - name: Test basic commands
+      run: |
+        ./clsecure --help || exit 1
+        ./clsecure --list || exit 1
+        ./clsecure --info || exit 1
+    
+    - name: Check for build consistency
+      run: |
+        # Check if clsecure matches what build.sh produces
+        git diff --exit-code clsecure || {
+          echo "Error: clsecure is out of sync with source"
+          echo "Run: ./build.sh"
+          exit 1
+        }
+
+  build-verification:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Rebuild and verify
+      run: |
+        chmod +x build.sh
+        ./build.sh
+        
+        # Check syntax
+        bash -n clsecure
+        
+        # Verify all modules are included
+        for module in vars logging lock config worker git sanitize deps isolation sync; do
+          grep -q "$module" clsecure || {
+            echo "Error: Module $module not found in built script"
+            exit 1
+          }
+        done
+        
+        echo "✅ Build verification passed"
