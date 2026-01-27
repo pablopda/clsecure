@@ -175,9 +175,66 @@ fi
 - For namespace mode: `firejail`
 - For container mode: `podman`
 
+## Development
+
+**clsecure** uses a modular architecture for maintainability:
+
+```
+clsecure/
+├── clsecure          # Built single-file (for distribution)
+├── clsecure-src      # Modular main script (for development)
+├── lib/              # Module library
+│   ├── vars.sh      # Variable initialization
+│   ├── logging.sh   # Logging functions
+│   ├── lock.sh      # Lock management
+│   ├── config.sh    # Configuration loading
+│   ├── worker.sh    # Worker user management
+│   ├── git.sh       # Git operations
+│   ├── sanitize.sh  # Path sanitization
+│   ├── deps.sh      # Dependency installation
+│   ├── isolation.sh # Isolation execution
+│   └── sync.sh      # Sync-back logic
+└── build.sh         # Build script (generates clsecure from modules)
+```
+
+### Development Workflow
+
+1. **Edit modules:** Modify `clsecure-src` and files in `lib/`
+2. **Rebuild:** Run `./build.sh` to regenerate `clsecure`
+3. **Test:** Run `./run_tests.sh` to execute unit tests
+4. **Commit:** Pre-commit hook verifies build consistency
+
+### Running Tests
+
+```bash
+# Install bats (test framework)
+sudo apt install bats  # Ubuntu/Debian
+brew install bats-core  # macOS
+
+# Run all tests
+./run_tests.sh
+```
+
+### Building
+
+```bash
+# Rebuild clsecure from modules
+./build.sh
+```
+
+The build script concatenates all modules into a single-file `clsecure` for distribution, maintaining backwards compatibility.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Development Guidelines
+
+- Follow bash best practices (`set -euo pipefail`)
+- Use the logging functions (`log_info`, `log_warn`, etc.)
+- Keep modules focused and under 300 lines
+- Add tests for new functionality
+- Run `./build.sh` before committing
 
 ## License
 
