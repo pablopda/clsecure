@@ -1,75 +1,647 @@
 #!/bin/bash
 
 # clsecure - Enhanced isolation with User + Namespace (Firejail)
-# Runs Claude Code in an isolated environment with user and namespace isolation
+# This file is auto-generated from modular source. Do not edit directly.
+# Source: https://github.com/pablopda/clsecure
+# 
+# To modify: Edit files in lib/ directory and run ./build.sh
 
 set -euo pipefail
 
-# ------------------------------------------------------------------------------
-# Configuration
-# ------------------------------------------------------------------------------
-WORKER_PREFIX="claude-worker"
-CURRENT_DIR=$(pwd)
-PROJECT_NAME=$(basename "$CURRENT_DIR")
+# ============================================================================
+# Library Modules (auto-merged from lib/ directory)
+# ============================================================================
 
-# Sanitize project name for username (lowercase, alphanumeric + dash)
-# Add hash suffix to avoid collisions when project names are truncated
-# Linux username limit is 32 chars: "claude-worker" (14 chars) + "-" (1) + project (max 17 chars) = 32 total
-PROJECT_NAME_SANITIZED=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-# Generate short hash from full directory path to ensure uniqueness
-# Use full path to handle projects with same name in different locations
-if command -v sha256sum &>/dev/null; then
-    PROJECT_HASH=$(echo -n "$CURRENT_DIR" | sha256sum | cut -c1-6)
-elif command -v shasum &>/dev/null; then
-    PROJECT_HASH=$(echo -n "$CURRENT_DIR" | shasum -a 256 | cut -c1-6)
-else
-    # Fallback: use first 6 chars of md5sum if available, otherwise use simple hash
-    if command -v md5sum &>/dev/null; then
-        PROJECT_HASH=$(echo -n "$CURRENT_DIR" | md5sum | cut -c1-6)
+
+# --- Module: vars.sh ---
+# lib/vars.sh
+# 
+# Global variable initialization for clsecure
+# 
+# Dependencies: None
+# Exports: All clsecure global variables
+# 
+# Usage:
+#   source lib/vars.sh
+#   init_clsecure_vars
+
+# Initialize all global variables for clsecure
+init_clsecure_vars() {
+    # Core variables
+    WORKER_PREFIX="claude-worker"
+    CURRENT_DIR=$(pwd)
+    PROJECT_NAME=$(basename "$CURRENT_DIR")
+
+    # Sanitize project name for username (lowercase, alphanumeric + dash)
+    # Add hash suffix to avoid collisions when project names are truncated
+    # Linux username limit is 32 chars: "claude-worker" (14 chars) + "-" (1) + project (max 17 chars) = 32 total
+    PROJECT_NAME_SANITIZED=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+    
+    # Generate short hash from full directory path to ensure uniqueness
+    # Use full path to handle projects with same name in different locations
+    if command -v sha256sum &>/dev/null; then
+        PROJECT_HASH=$(echo -n "$CURRENT_DIR" | sha256sum | cut -c1-6)
+    elif command -v shasum &>/dev/null; then
+        PROJECT_HASH=$(echo -n "$CURRENT_DIR" | shasum -a 256 | cut -c1-6)
     else
-        # Last resort: use first 6 chars of sanitized path
-        PROJECT_HASH=$(echo -n "$CURRENT_DIR" | tr -cd 'a-z0-9' | cut -c1-6)
-        [ -z "$PROJECT_HASH" ] && PROJECT_HASH="000000"
+        # Fallback: use first 6 chars of md5sum if available, otherwise use simple hash
+        if command -v md5sum &>/dev/null; then
+            PROJECT_HASH=$(echo -n "$CURRENT_DIR" | md5sum | cut -c1-6)
+        else
+            # Last resort: use first 6 chars of sanitized path
+            PROJECT_HASH=$(echo -n "$CURRENT_DIR" | tr -cd 'a-z0-9' | cut -c1-6)
+            [ -z "$PROJECT_HASH" ] && PROJECT_HASH="000000"
+        fi
     fi
-fi
-# Combine: first 10 chars of name + dash + 6 char hash = 17 chars total
-# "claude-worker" (14) + "-" (1) + project (17) = 32 chars (fits Linux username limit)
-SAFE_PROJECT_NAME="${PROJECT_NAME_SANITIZED:0:10}-${PROJECT_HASH}"
-WORKER_USER="${WORKER_PREFIX}-${SAFE_PROJECT_NAME}"
-WORKER_HOME="/home/$WORKER_USER"
-WORKER_PROJECT="$WORKER_HOME/project"
+    
+    # Combine: first 10 chars of name + dash + 6 char hash = 17 chars total
+    # "claude-worker" (14) + "-" (1) + project (17) = 32 chars (fits Linux username limit)
+    SAFE_PROJECT_NAME="${PROJECT_NAME_SANITIZED:0:10}-${PROJECT_HASH}"
+    WORKER_USER="${WORKER_PREFIX}-${SAFE_PROJECT_NAME}"
+    WORKER_HOME="/home/$WORKER_USER"
+    WORKER_PROJECT="$WORKER_HOME/project"
 
-# Lock file
-LOCK_DIR="/tmp/claude-secure-locks"
-LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
+    # Lock file
+    LOCK_DIR="/tmp/claude-secure-locks"
+    LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
 
-# Default isolation settings (can be overridden by config file and CLI args)
-ISOLATION_MODE="namespace"  # Options: user, namespace, container
-ALLOW_NETWORK=true
-ALLOW_DOCKER=false
-INSTALL_DEPS=false
-SETUP_SCRIPT=""
+    # Default isolation settings (can be overridden by config file and CLI args)
+    ISOLATION_MODE="namespace"  # Options: user, namespace, container
+    ALLOW_NETWORK=true
+    ALLOW_DOCKER=false
+    INSTALL_DEPS=false
+    SETUP_SCRIPT=""
+    SHELL_ONLY=false  # If true, drop into shell instead of running Claude
+    SKIP_SETUP=false  # If true, skip setup script execution
+    FULL_CLONE=false  # If true, clone full git history (slower)
 
-# Config file locations (XDG standard, then fallback)
-CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
-CONFIG_FILE_ALT="$HOME/.clsecurerc"
+    # Config file locations (XDG standard, then fallback)
+    CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
+    CONFIG_FILE_ALT="$HOME/.clsecurerc"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+    # Colors
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    NC='\033[0m'
 
-# ------------------------------------------------------------------------------
-# Helper functions
-# ------------------------------------------------------------------------------
+    # Export variables that modules need
+    export WORKER_USER WORKER_HOME WORKER_PROJECT
+    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE
+    export LOCK_FILE LOCK_DIR
+    export CONFIG_FILE CONFIG_FILE_ALT
+    export RED GREEN YELLOW BLUE CYAN NC
+    export WORKER_PREFIX CURRENT_DIR PROJECT_NAME PROJECT_NAME_SANITIZED PROJECT_HASH SAFE_PROJECT_NAME
+}
+
+
+# --- Module: logging.sh ---
+# lib/logging.sh
+# 
+# Logging functions for clsecure
+# 
+# Dependencies: lib/vars.sh (for color variables)
+# Exports: log_info, log_warn, log_error, log_step, log_security
+# 
+# Usage:
+#   source lib/logging.sh
+#   log_info "Message"
+
+# Logging functions
+# Note: These functions use color variables (GREEN, YELLOW, RED, BLUE, CYAN, NC)
+# which are exported from lib/vars.sh. Ensure vars.sh is sourced before this module.
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 log_security() { echo -e "${CYAN}[SECURITY]${NC} $1"; }
+
+
+# --- Module: lock.sh ---
+# lib/lock.sh
+# 
+# Lock management for clsecure
+# 
+# Dependencies: lib/logging.sh, lib/vars.sh
+# Exports: acquire_lock, release_lock, cleanup_on_exit
+# 
+# Usage:
+#   source lib/lock.sh
+#   acquire_lock || exit 1
+#   # ... do work ...
+#   release_lock
+
+# Acquire lock atomically to prevent concurrent sessions
+acquire_lock() {
+    mkdir -p "$LOCK_DIR" 2>/dev/null || sudo mkdir -p "$LOCK_DIR"
+    sudo chmod 1777 "$LOCK_DIR" 2>/dev/null || true
+
+    # Use flock for atomic lock acquisition to prevent race conditions
+    # Try to acquire lock with timeout of 0 (non-blocking)
+    if command -v flock &>/dev/null; then
+        # Use a temporary file descriptor to capture subshell exit code
+        # The subshell's exit code determines if we got the lock
+        if ! (
+            flock -n 9 || exit 1
+            # Check if existing lock file has a valid process
+            if [ -f "$LOCK_FILE" ]; then
+                local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    exit 1
+                fi
+                rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE"
+            fi
+            # Write our PID to lock file
+            echo $$ > "$LOCK_FILE" 2>/dev/null || echo $$ | sudo tee "$LOCK_FILE" > /dev/null
+            exit 0
+        ) 9>"$LOCK_FILE"; then
+            # Subshell exited with non-zero (lock failed)
+            return 1
+        fi
+        # Subshell exited with zero (lock acquired)
+        return 0
+    else
+        # Fallback to original method if flock not available
+        if [ -f "$LOCK_FILE" ]; then
+            local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                return 1
+            fi
+            rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE"
+        fi
+        echo $$ > "$LOCK_FILE" 2>/dev/null || echo $$ | sudo tee "$LOCK_FILE" > /dev/null
+        return 0
+    fi
+}
+
+# Release lock
+release_lock() {
+    rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE" 2>/dev/null || true
+}
+
+# Cleanup handler for trap (called on exit)
+cleanup_on_exit() {
+    release_lock
+}
+
+
+# --- Module: config.sh ---
+# lib/config.sh
+# 
+# Configuration loading and validation for clsecure
+# 
+# Dependencies: lib/logging.sh, lib/vars.sh
+# Exports: load_config, show_config_info
+# 
+# Usage:
+#   source lib/config.sh
+#   load_config
+
+# Load configuration file
+load_config() {
+    local config_file=""
+
+    # Check for config file (XDG location first, then fallback)
+    if [ -f "$CONFIG_FILE" ]; then
+        config_file="$CONFIG_FILE"
+    elif [ -f "$CONFIG_FILE_ALT" ]; then
+        config_file="$CONFIG_FILE_ALT"
+    else
+        return 0  # No config file, use defaults
+    fi
+
+    # Parse config file (simple key=value format, ignore comments and empty lines)
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+
+        # Trim whitespace
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+
+        # Remove quotes from value if present
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value#\'}"
+        value="${value%\'}"
+
+        case "$key" in
+            mode|isolation_mode|ISOLATION_MODE)
+                if [[ "$value" =~ ^(user|namespace|container)$ ]]; then
+                    ISOLATION_MODE="$value"
+                fi
+                ;;
+            network|allow_network|ALLOW_NETWORK)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_NETWORK=true || ALLOW_NETWORK=false
+                fi
+                ;;
+            docker|allow_docker|ALLOW_DOCKER)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_DOCKER=true || ALLOW_DOCKER=false
+                fi
+                ;;
+            install_dependencies|INSTALL_DEPS)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && INSTALL_DEPS=true || INSTALL_DEPS=false
+                fi
+                ;;
+            setup_script|SETUP_SCRIPT)
+                if [ -n "$value" ]; then
+                    SETUP_SCRIPT="$value"
+                fi
+                ;;
+        esac
+    done < "$config_file"
+}
+
+show_config_info() {
+    local config_file=""
+    if [ -f "$CONFIG_FILE" ]; then
+        config_file="$CONFIG_FILE"
+    elif [ -f "$CONFIG_FILE_ALT" ]; then
+        config_file="$CONFIG_FILE_ALT"
+    fi
+
+    echo ""
+    echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║     Configuration                      ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+
+    if [ -n "$config_file" ]; then
+        echo -e "${GREEN}Config file:${NC} $config_file"
+        echo ""
+        echo "Current contents:"
+        cat "$config_file" | sed 's/^/  /'
+    else
+        echo -e "${YELLOW}No config file found.${NC}"
+        echo ""
+        echo "Create one at: $CONFIG_FILE"
+    fi
+
+    echo ""
+    echo "Example configuration:"
+    echo ""
+    echo "  # Default isolation mode: user, namespace, or container"
+    echo "  mode = namespace"
+    echo ""
+    echo "  # Allow network access (true/false)"
+    echo "  network = true"
+    echo ""
+    echo "  # Allow Docker access (true/false)"
+    echo "  docker = false"
+    echo ""
+    exit 0
+}
+
+
+# --- Module: worker.sh ---
+# lib/worker.sh
+# 
+# Worker user management for clsecure
+# 
+# Dependencies: lib/logging.sh, lib/config.sh, lib/vars.sh
+# Exports: list_workers, cleanup_workers, cleanup_all_workers, check_worker_exists, create_worker_user, setup_worker_home
+# 
+# Usage:
+#   source lib/worker.sh
+#   create_worker_user
+
+# List all worker users and their status
+list_workers() {
+    echo ""
+    echo -e "${GREEN}Claude Worker Users:${NC}"
+    echo ""
+
+    local workers=$(getent passwd | grep "^${WORKER_PREFIX}-" | cut -d: -f1 || true)
+
+    if [ -z "$workers" ]; then
+        log_info "No worker users found."
+        exit 0
+    fi
+
+    printf "%-30s %-10s %-15s %s\n" "USER" "STATUS" "SIZE" "PROJECT PATH"
+    printf "%-30s %-10s %-15s %s\n" "----" "------" "----" "------------"
+
+    for user in $workers; do
+        local home_dir="/home/$user"
+        local lock_file="$LOCK_DIR/${user}.lock"
+        local status="idle"
+
+        if [ -f "$lock_file" ]; then
+            local pid=$(cat "$lock_file" 2>/dev/null || echo "")
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                status="${YELLOW}RUNNING${NC}"
+            else
+                sudo rm -f "$lock_file" 2>/dev/null || true
+            fi
+        fi
+
+        local size="N/A"
+        if [ -d "$home_dir" ]; then
+            size=$(sudo du -sh "$home_dir" 2>/dev/null | cut -f1 || echo "N/A")
+        fi
+
+        local project_path="-"
+        if [ -d "$home_dir/project/.git" ]; then
+            project_path=$(sudo -u "$user" git -C "$home_dir/project" remote get-url origin 2>/dev/null | sed 's|.*/||' | sed 's|\.git$||' || echo "-")
+        fi
+
+        printf "%-30s %-10b %-15s %s\n" "$user" "$status" "$size" "$project_path"
+    done
+
+    echo ""
+    exit 0
+}
+
+# Interactively cleanup specific worker users
+cleanup_workers() {
+    echo ""
+    echo -e "${GREEN}Claude Worker Users Cleanup:${NC}"
+    echo ""
+
+    local workers=$(getent passwd | grep "^${WORKER_PREFIX}-" | cut -d: -f1 || true)
+
+    if [ -z "$workers" ]; then
+        log_info "No worker users found."
+        exit 0
+    fi
+
+    local worker_array=($workers)
+
+    echo "Found worker users:"
+    for i in "${!worker_array[@]}"; do
+        local user="${worker_array[$i]}"
+        local lock_file="$LOCK_DIR/${user}.lock"
+        local status=""
+
+        if [ -f "$lock_file" ]; then
+            local pid=$(cat "$lock_file" 2>/dev/null || echo "")
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                status=" ${YELLOW}(RUNNING - cannot remove)${NC}"
+            fi
+        fi
+
+        echo -e "  $((i+1))) ${user}${status}"
+    done
+    echo "  q) Quit"
+    echo ""
+
+    read -p "Select user to remove (number or 'q'): " selection
+
+    if [[ "$selection" == "q" || "$selection" == "Q" ]]; then
+        exit 0
+    fi
+
+    if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le ${#worker_array[@]} ]; then
+        local user="${worker_array[$((selection-1))]}"
+        local lock_file="$LOCK_DIR/${user}.lock"
+
+        if [ -f "$lock_file" ]; then
+            local pid=$(cat "$lock_file" 2>/dev/null || echo "")
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                log_error "Cannot remove '$user' - session is still running (PID: $pid)"
+                exit 1
+            fi
+        fi
+
+        echo ""
+        read -p "Remove user '$user' and all their files? (y/n): " confirm
+        if [[ "$confirm" =~ ^[Yy]$ ]]; then
+            log_info "Removing user '$user'..."
+            sudo userdel -r "$user" 2>/dev/null || sudo userdel "$user" 2>/dev/null || true
+            sudo rm -rf "/home/$user" 2>/dev/null || true
+            sudo rm -f "$lock_file" 2>/dev/null || true
+            log_info "Done."
+        else
+            log_info "Cancelled."
+        fi
+    else
+        log_error "Invalid selection."
+        exit 1
+    fi
+
+    exit 0
+}
+
+# Remove ALL worker users (requires confirmation)
+cleanup_all_workers() {
+    echo ""
+    echo -e "${RED}WARNING: This will remove ALL claude-worker users and their files.${NC}"
+    echo ""
+
+    local workers=$(getent passwd | grep "^${WORKER_PREFIX}-" | cut -d: -f1 || true)
+
+    if [ -z "$workers" ]; then
+        log_info "No worker users found."
+        exit 0
+    fi
+
+    echo "Users to be removed:"
+    for user in $workers; do
+        echo "  - $user"
+    done
+    echo ""
+
+    read -p "Type 'DELETE ALL' to confirm: " confirm
+    if [ "$confirm" = "DELETE ALL" ]; then
+        for user in $workers; do
+            local lock_file="$LOCK_DIR/${user}.lock"
+
+            if [ -f "$lock_file" ]; then
+                local pid=$(cat "$lock_file" 2>/dev/null || echo "")
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    log_warn "Skipping '$user' - still running (PID: $pid)"
+                    continue
+                fi
+            fi
+
+            log_info "Removing '$user'..."
+            sudo userdel -r "$user" 2>/dev/null || sudo userdel "$user" 2>/dev/null || true
+            sudo rm -rf "/home/$user" 2>/dev/null || true
+            sudo rm -f "$lock_file" 2>/dev/null || true
+        done
+        log_info "Done."
+    else
+        log_info "Cancelled."
+    fi
+
+    exit 0
+}
+
+# Check if worker user exists
+check_worker_exists() {
+    id "$WORKER_USER" &>/dev/null
+}
+
+# Create worker user if it doesn't exist
+create_worker_user() {
+    if ! check_worker_exists; then
+        log_info "Creating user '$WORKER_USER'..."
+        sudo useradd -m -s /bin/bash "$WORKER_USER"
+        log_info "User created."
+    else
+        log_info "User already exists."
+    fi
+
+    # Add to docker group if docker exists and docker access is allowed
+    if command -v docker &>/dev/null && [ "$ALLOW_DOCKER" = true ]; then
+        if ! groups "$WORKER_USER" 2>/dev/null | grep -q '\bdocker\b'; then
+            log_warn "Adding worker to docker group (grants root-equivalent access)"
+            log_info "Adding to docker group..."
+            sudo usermod -aG docker "$WORKER_USER"
+        fi
+    fi
+}
+
+# Setup worker home directory (permissions, ownership)
+setup_worker_home() {
+    sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME"
+    sudo chmod 755 "$WORKER_HOME"
+}
+
+
+# --- Module: git.sh ---
+# lib/git.sh
+# 
+# Git operations for clsecure
+# 
+# Dependencies: lib/logging.sh, lib/worker.sh, lib/vars.sh
+# Exports: check_disk_space, clone_repository, sync_working_directory, copy_submodules, setup_git_config
+# 
+# Usage:
+#   source lib/git.sh
+#   clone_repository
+
+# Check available disk space before cloning
+check_disk_space() {
+    local required_mb="${1:-1000}"  # Default: 1GB minimum
+    if command -v df &>/dev/null; then
+        local available_space=$(df -m "$WORKER_HOME" 2>/dev/null | tail -1 | awk '{print $4}' || echo "0")
+        if [ "$available_space" -lt "$required_mb" ] 2>/dev/null; then
+            log_error "Insufficient disk space (need ${required_mb}MB, have ${available_space}MB)"
+            log_info "Free up space or use a different location"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Clone repository to worker project directory
+# Uses shallow clone (50 commits) by default; set FULL_CLONE=true for full history
+clone_repository() {
+    sudo rm -rf "$WORKER_PROJECT" 2>/dev/null || true
+
+    if [ "${FULL_CLONE:-false}" = true ]; then
+        log_info "Cloning repository (full history)..."
+        if ! sudo git clone --no-hardlinks --quiet "$CURRENT_DIR" "$WORKER_PROJECT"; then
+            log_error "Failed to clone repository"
+            return 1
+        fi
+    else
+        log_info "Cloning repository (last 50 commits)..."
+        # Use file:// protocol to enable --depth for local repos
+        # 50 commits gives enough history for git log/blame while being fast
+        if ! sudo git clone --quiet --depth 50 "file://$CURRENT_DIR" "$WORKER_PROJECT"; then
+            log_error "Failed to clone repository"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Sync working directory files (rsync)
+sync_working_directory() {
+    log_info "Syncing working directory..."
+    sudo rsync -a \
+        --exclude='.git' \
+        --exclude='node_modules' \
+        --exclude='venv' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='.pytest_cache' \
+        --exclude='dist' \
+        --exclude='build' \
+        --exclude='.next' \
+        --exclude='target' \
+        "$CURRENT_DIR/" "$WORKER_PROJECT/"
+}
+
+# Copy submodules from source if they exist
+copy_submodules() {
+    # Copy submodules from source if they exist
+    # This avoids needing SSH keys since we're copying from the already-cloned source
+    if [ -f "$CURRENT_DIR/.gitmodules" ] && [ -d "$CURRENT_DIR/.git/modules" ]; then
+        log_info "Copying submodules from source..."
+        
+        # Copy .git/modules directory (contains submodule git repositories)
+        if ! sudo cp -r "$CURRENT_DIR/.git/modules" "$WORKER_PROJECT/.git/modules" 2>/dev/null; then
+            log_warn "Failed to copy submodules - they may not work correctly"
+            return 1
+        fi
+        
+        # Fix .git pointers in submodule directories to point to local .git/modules
+        # Use git config to properly read submodule paths (more robust than parsing .gitmodules)
+        # Use process substitution to avoid subshell issues
+        while IFS= read -r line; do
+            # Line format: "submodule.<name>.path <path>"
+            # Extract path value (everything after the FIRST space, not last)
+            # Use read with IFS to split on first space only
+            IFS=' ' read -r _ submodule_path <<< "$line"
+            # Trim leading/trailing whitespace
+            submodule_path="${submodule_path#"${submodule_path%%[![:space:]]*}"}"
+            submodule_path="${submodule_path%"${submodule_path##*[![:space:]]}"}"
+            
+            if [ -n "$submodule_path" ] && [ -d "$WORKER_PROJECT/$submodule_path" ]; then
+                # Git stores submodules in .git/modules using the path name
+                gitdir_path="$WORKER_PROJECT/.git/modules/$submodule_path"
+                if [ -d "$gitdir_path" ]; then
+                    # Remove existing .git file or directory
+                    sudo rm -rf "$WORKER_PROJECT/$submodule_path/.git" 2>/dev/null || true
+                    # Create .git file pointing to .git/modules
+                    echo "gitdir: $gitdir_path" | sudo tee "$WORKER_PROJECT/$submodule_path/.git" > /dev/null
+                fi
+            fi
+        done < <(git config --file "$CURRENT_DIR/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+    fi
+    return 0
+}
+
+# Setup git config for worker user (user.name and user.email)
+setup_git_config() {
+    # Read git config from the CURRENT directory (host user's repo), not from worker directory
+    # This ensures we get the host user's git config, not the worker's
+    # Suppress all git errors (including "fatal: failed to stat") to prevent permission issues
+    local git_user_name="$(cd "$CURRENT_DIR" 2>/dev/null && git config user.name 2>/dev/null || echo "")"
+    local git_user_email="$(cd "$CURRENT_DIR" 2>/dev/null && git config user.email 2>/dev/null || echo "")"
+
+    if [ -n "$git_user_name" ] || [ -n "$git_user_email" ]; then
+        # Use git config command to safely set values (avoids injection risk)
+        if [ -n "$git_user_name" ]; then
+            sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.name "$git_user_name" 2>/dev/null || true
+        fi
+        if [ -n "$git_user_email" ]; then
+            sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.email "$git_user_email" 2>/dev/null || true
+        fi
+    fi
+}
+
+
+# --- Module: sanitize.sh ---
+# lib/sanitize.sh
+# 
+# Path sanitization for MCP and Claude config files
+# 
+# Dependencies: lib/logging.sh, lib/worker.sh, lib/vars.sh
+# Exports: sanitize_mcp_config, sanitize_worker_claude_home_paths, check_worker_mcp_runtime
+# 
+# Usage:
+#   source lib/sanitize.sh
+#   sanitize_mcp_config
 
 # Sanitize project-local MCP config so it works under worker users.
 # Claude often stores absolute tool paths (e.g. /home/<user>/.nvm/.../npx) in `.mcp.json`,
@@ -234,48 +806,70 @@ try:
         
         return re.sub(pattern, replacer, text)
 
-    changed_files = 0
+    # Use a list to track changed files count (mutable object for nested functions)
+    changed_files = [0]
 
-    for p in claude_dir.rglob("*"):
-        if not p.is_file():
-            continue
-
+    # Use iterdir() and manual recursion instead of rglob() to avoid following symlinks
+    # rglob() follows symlinks by default, which can cause permission errors
+    def process_directory(dir_path):
+        """Recursively process directory, skipping symlinks."""
+        try:
+            for item in dir_path.iterdir():
+                # Skip symlinks entirely to avoid following them outside worker directory
+                if item.is_symlink():
+                    continue
+                
+                if item.is_dir():
+                    # Recursively process subdirectories
+                    process_directory(item)
+                elif item.is_file():
+                    # Process the file (error handling is inside process_file)
+                    process_file(item)
+        except (PermissionError, OSError):
+            # Skip directories we can't access
+            return
+    
+    def process_file(p):
+        """Process a single file for path sanitization."""
         try:
             st = p.stat()
-        except FileNotFoundError:
-            continue
+        except (FileNotFoundError, PermissionError, OSError):
+            return
 
         # Avoid large/unexpected files
         if st.st_size > 1024 * 1024:
-            continue
+            return
 
         try:
             raw = p.read_bytes()
-        except (OSError, FileNotFoundError):
-            continue
+        except (OSError, FileNotFoundError, PermissionError):
+            return
 
         if not is_probably_text(raw):
-            continue
+            return
 
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            continue
+            return
 
         if host_home not in text:
-            continue
+            return
 
         new_text = replace_path_safely(text, host_home, worker_home)
         if new_text != text:
             try:
                 p.write_text(new_text, encoding="utf-8")
-                changed_files += 1
+                changed_files[0] += 1
             except (OSError, PermissionError, IOError):
                 # Best-effort operation: skip this file but continue processing others
-                continue
+                return
             except Exception:
                 # Catch any other unexpected errors for this file
-                continue
+                return
+    
+    # Start processing from the claude directory
+    process_directory(claude_dir)
 
     # Always exit successfully - this is a best-effort operation
     sys.exit(0)
@@ -286,182 +880,189 @@ except Exception:
 PY
 }
 
-# Load configuration file
-load_config() {
-    local config_file=""
 
-    # Check for config file (XDG location first, then fallback)
-    if [ -f "$CONFIG_FILE" ]; then
-        config_file="$CONFIG_FILE"
-    elif [ -f "$CONFIG_FILE_ALT" ]; then
-        config_file="$CONFIG_FILE_ALT"
+# --- Module: deps.sh ---
+# lib/deps.sh
+#
+# Dependency installation for clsecure
+#
+# Dependencies: lib/logging.sh, lib/worker.sh, lib/vars.sh
+# Exports: install_project_dependencies, run_setup_script, copy_npm_cache, install_task_master
+#
+# Usage:
+#   source lib/deps.sh
+#   install_project_dependencies
+
+# Copy npm cache from invoking user to worker user
+# This speeds up npm installs significantly by avoiding re-downloads
+copy_npm_cache() {
+    local source_cache="${HOME}/.npm"
+    local dest_cache="${WORKER_HOME}/.npm"
+
+    if [ ! -d "$source_cache" ]; then
+        log_info "No npm cache found at $source_cache, skipping cache copy."
+        return 0
+    fi
+
+    if [ -d "$dest_cache" ]; then
+        log_info "Worker npm cache already exists."
+        return 0
+    fi
+
+    log_info "Copying npm cache to worker user..."
+    sudo cp -r "$source_cache" "$dest_cache"
+    sudo chown -R "$WORKER_USER:$WORKER_USER" "$dest_cache"
+    log_info "npm cache copied successfully."
+}
+
+# Install task-master-ai with retry logic
+# Args: $1 = max retries (default 2)
+install_task_master() {
+    local max_retries="${1:-2}"
+    local attempt=1
+
+    log_step "Checking task-master-ai..."
+
+    # Check if already installed
+    if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && command -v task-master" &>/dev/null; then
+        log_info "task-master-ai already installed."
+        return 0
+    fi
+
+    # Copy npm cache first to speed up installation
+    copy_npm_cache
+
+    while [ $attempt -le $max_retries ]; do
+        log_info "Installing task-master-ai (attempt $attempt/$max_retries)..."
+
+        # Install with increased timeout (5 minutes)
+        if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && npm install -g task-master-ai --fetch-timeout=300000 --fetch-retries=3" 2>&1; then
+            log_info "task-master-ai installed successfully."
+            return 0
+        fi
+
+        log_warn "Attempt $attempt failed."
+        attempt=$((attempt + 1))
+
+        if [ $attempt -le $max_retries ]; then
+            log_info "Retrying in 5 seconds..."
+            sleep 5
+        fi
+    done
+
+    log_warn "Failed to install task-master-ai after $max_retries attempts. Continuing anyway..."
+    return 1
+}
+
+# Install project dependencies (npm/pip)
+install_project_dependencies() {
+    log_step "Installing project dependencies..."
+    
+    if [ -f "$WORKER_PROJECT/package.json" ]; then
+        log_info "Found package.json, running npm install..."
+        sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && source \"$WORKER_HOME/.bashrc\" && npm install"
+    fi
+
+    if [ -f "$WORKER_PROJECT/requirements.txt" ]; then
+        log_info "Found requirements.txt..."
+        if [ ! -d "$WORKER_PROJECT/venv" ] && [ ! -d "$WORKER_PROJECT/.venv" ]; then
+            log_info "Creating virtual environment..."
+            sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && python3 -m venv venv"
+        fi
+        
+        local venv_dir="$WORKER_PROJECT/venv"
+        if [ -d "$WORKER_PROJECT/.venv" ]; then
+            venv_dir="$WORKER_PROJECT/.venv"
+        fi
+        
+        log_info "Installing pip requirements in $venv_dir..."
+        sudo -u "$WORKER_USER" bash -c "source '$venv_dir/bin/activate' && pip install -r '$WORKER_PROJECT/requirements.txt'"
+    fi
+}
+
+# Run setup script if configured
+run_setup_script() {
+    if [ -z "$SETUP_SCRIPT" ]; then
+        return 0
+    fi
+
+    log_step "Running setup script..."
+    if [ ! -f "$SETUP_SCRIPT" ]; then
+        log_warn "Setup script configured but not found: $SETUP_SCRIPT"
+        return 1
+    fi
+
+    local worker_setup_script="$WORKER_HOME/setup_script.sh"
+    sudo cp "$SETUP_SCRIPT" "$worker_setup_script"
+    sudo chown "$WORKER_USER:$WORKER_USER" "$worker_setup_script"
+    sudo chmod +x "$worker_setup_script"
+    
+    # Capture GH_TOKEN if available
+    # Priority: Env var -> gh auth token
+    local gh_token_val="${GH_TOKEN:-}"
+    if [ -z "$gh_token_val" ] && command -v gh &>/dev/null; then
+         gh_token_val=$(gh auth token 2>/dev/null || echo "")
+    fi
+
+    log_info "Executing $SETUP_SCRIPT..."
+    if [ -n "$gh_token_val" ]; then
+         if sudo -u "$WORKER_USER" GH_TOKEN="$gh_token_val" bash -c "cd && source ~/.bashrc && $worker_setup_script"; then
+             log_info "Setup script executed successfully."
+             return 0
+         else
+             log_warn "Setup script failed."
+             return 1
+         fi
     else
-        return 0  # No config file, use defaults
+         if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && $worker_setup_script"; then
+             log_info "Setup script executed successfully."
+             return 0
+         else
+             log_warn "Setup script failed."
+             return 1
+         fi
     fi
-
-    # Parse config file (simple key=value format, ignore comments and empty lines)
-    while IFS='=' read -r key value || [ -n "$key" ]; do
-        # Skip comments and empty lines
-        [[ "$key" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "$key" ]] && continue
-
-        # Trim whitespace
-        key=$(echo "$key" | xargs)
-        value=$(echo "$value" | xargs)
-
-        # Remove quotes from value if present
-        value="${value#\"}"
-        value="${value%\"}"
-        value="${value#\'}"
-        value="${value%\'}"
-
-        case "$key" in
-            mode|isolation_mode|ISOLATION_MODE)
-                if [[ "$value" =~ ^(user|namespace|container)$ ]]; then
-                    ISOLATION_MODE="$value"
-                fi
-                ;;
-            network|allow_network|ALLOW_NETWORK)
-                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
-                    [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_NETWORK=true || ALLOW_NETWORK=false
-                fi
-                ;;
-            docker|allow_docker|ALLOW_DOCKER)
-                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
-                    [[ "$value" =~ ^(true|yes|1)$ ]] && ALLOW_DOCKER=true || ALLOW_DOCKER=false
-                fi
-                ;;
-            install_dependencies|INSTALL_DEPS)
-                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
-                    [[ "$value" =~ ^(true|yes|1)$ ]] && INSTALL_DEPS=true || INSTALL_DEPS=false
-                fi
-                ;;
-            setup_script|SETUP_SCRIPT)
-                if [ -n "$value" ]; then
-                    SETUP_SCRIPT="$value"
-                fi
-                ;;
-        esac
-    done < "$config_file"
 }
 
-show_config_info() {
-    local config_file=""
-    if [ -f "$CONFIG_FILE" ]; then
-        config_file="$CONFIG_FILE"
-    elif [ -f "$CONFIG_FILE_ALT" ]; then
-        config_file="$CONFIG_FILE_ALT"
-    fi
 
-    echo ""
-    echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║     Configuration                      ║${NC}"
-    echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
-    echo ""
+# --- Module: isolation.sh ---
+# lib/isolation.sh
+# 
+# Isolation mode execution for clsecure
+# 
+# Dependencies: lib/logging.sh, lib/config.sh, lib/worker.sh, lib/vars.sh
+# Exports: check_isolation_requirements, show_isolation_info, start_user_session, start_namespace_session, start_container_session
+# 
+# Usage:
+#   source lib/isolation.sh
+#   check_isolation_requirements
 
-    if [ -n "$config_file" ]; then
-        echo -e "${GREEN}Config file:${NC} $config_file"
-        echo ""
-        echo "Current contents:"
-        cat "$config_file" | sed 's/^/  /'
-    else
-        echo -e "${YELLOW}No config file found.${NC}"
-        echo ""
-        echo "Create one at: $CONFIG_FILE"
-    fi
-
-    echo ""
-    echo "Example configuration:"
-    echo ""
-    echo "  # Default isolation mode: user, namespace, or container"
-    echo "  mode = namespace"
-    echo ""
-    echo "  # Allow network access (true/false)"
-    echo "  network = true"
-    echo ""
-    echo "  # Allow Docker access (true/false)"
-    echo "  docker = false"
-    echo ""
-    exit 0
+# Check isolation requirements (firejail/podman)
+check_isolation_requirements() {
+    case $ISOLATION_MODE in
+        namespace)
+            if ! command -v firejail &>/dev/null; then
+                log_error "Firejail not found. Install with: sudo apt install firejail"
+                log_info "Or use --mode user for basic isolation"
+                exit 1
+            fi
+            log_security "Namespace isolation enabled (firejail)"
+            ;;
+        container)
+            if ! command -v podman &>/dev/null; then
+                log_error "Podman not found. Install with: sudo apt install podman"
+                log_info "Or use --mode namespace for firejail isolation"
+                exit 1
+            fi
+            log_security "Container isolation enabled (podman)"
+            ;;
+        user)
+            log_security "User isolation enabled (basic)"
+            ;;
+    esac
 }
 
-show_help() {
-    cat << EOF
-Usage: clsecure [OPTIONS]
-
-Run Claude Code with enhanced isolation (User + Namespace).
-
-OPTIONS:
-    --help, -h          Show this help message
-    --list, -l          List all claude-worker users and their status
-    --cleanup           Interactively remove worker users
-    --cleanup-all       Remove ALL claude-worker users (requires confirmation)
-    --mode MODE         Isolation mode: user, namespace (default), container
-    --allow-network     Allow network access (default: from config or true)
-    --no-network        Disable network access (--net=none in firejail)
-    --allow-docker      Allow access to Docker (WARNING: reduces isolation)
-    --no-docker         Disable Docker access (default)
-    --install-deps      Install project dependencies (npm/pip) on startup
-    --config            Show current configuration and config file location
-    --info              Show isolation details for current mode
-
-ISOLATION MODES:
-    user                Basic user isolation (original clsecure behavior)
-    namespace           User + Namespace (firejail) - RECOMMENDED
-    container           User + Container (podman rootless) - MAXIMUM SECURITY
-
-CONFIGURATION FILE:
-    Settings can be configured in ~/.config/clsecure/config or ~/.clsecurerc
-    Command-line arguments override config file settings.
-
-    Example config file:
-        # Default isolation mode
-        mode = namespace
-
-        # Allow network access (true/false)
-        network = true
-
-        # Allow Docker access (true/false)
-        docker = false
-
-        # Install project dependencies (true/false)
-        install_dependencies = false
-
-REQUIREMENTS:
-    - git (must be run from a git repository)
-    - rsync
-    - sudo privileges
-    - For namespace mode: firejail
-    - For container mode: podman
-
-EXAMPLES:
-    # Run with recommended namespace isolation
-    clsecure
-
-    # Run with network disabled
-    clsecure --no-network
-
-    # Run with Docker access (for docker-compose)
-    clsecure --allow-docker
-
-    # Run with basic user isolation only
-    clsecure --mode user
-
-    # Show config file and current settings
-    clsecure --config
-
-    # Show isolation details
-    clsecure --info
-
-SECURITY MODEL:
-    User isolation:      Dedicated Linux user per project
-    Namespace isolation: + Firejail sandbox (PID, mount, network, IPC)
-    Container isolation: + Full containerization (podman rootless)
-
-EOF
-    exit 0
-}
-
+# Show isolation information
 show_isolation_info() {
     echo ""
     echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
@@ -557,189 +1158,393 @@ show_isolation_info() {
     exit 0
 }
 
-check_isolation_requirements() {
-    case $ISOLATION_MODE in
-        namespace)
-            if ! command -v firejail &>/dev/null; then
-                log_error "Firejail not found. Install with: sudo apt install firejail"
-                log_info "Or use --mode user for basic isolation"
-                exit 1
-            fi
-            log_security "Namespace isolation enabled (firejail)"
-            ;;
-        container)
-            if ! command -v podman &>/dev/null; then
-                log_error "Podman not found. Install with: sudo apt install podman"
-                log_info "Or use --mode namespace for firejail isolation"
-                exit 1
-            fi
-            log_security "Container isolation enabled (podman)"
-            ;;
-        user)
-            log_security "User isolation enabled (basic)"
-            ;;
-    esac
+# Start user isolation session
+start_user_session() {
+    local continue_flag="$1"
+    # Original behavior: just run as worker user
+    # Pass GH_TOKEN if available to the session too
+    local gh_token_val="${GH_TOKEN:-}"
+    if [ -z "$gh_token_val" ] && command -v gh &>/dev/null; then
+         gh_token_val=$(gh auth token 2>/dev/null || echo "")
+    fi
+    
+    # Use env command to safely pass environment variables (avoids command injection)
+    if [ -n "$gh_token_val" ]; then
+        sudo -u "$WORKER_USER" env GH_TOKEN="$gh_token_val" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
+    else
+        sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
+    fi
 }
 
-# Include all functions from original clsecure
-list_workers() {
-    echo ""
-    echo -e "${GREEN}Claude Worker Users:${NC}"
-    echo ""
+# Start namespace isolation session (firejail)
+start_namespace_session() {
+    local continue_flag="$1"
+    # Enhanced: Add firejail namespace isolation
+    local network_flag=""
+    [ "$ALLOW_NETWORK" = false ] && network_flag="--net=none"
 
-    local workers=$(getent passwd | grep "^${WORKER_PREFIX}-" | cut -d: -f1 || true)
-
-    if [ -z "$workers" ]; then
-        log_info "No worker users found."
-        exit 0
+    # Docker support
+    local docker_flags="--noroot"
+    if [ "$ALLOW_DOCKER" = true ]; then
+        # Docker access requires disabling User Namespace (--noroot) to preserve group permissions
+        # and ensuring the socket is accessible
+        docker_flags="--noblacklist=/var/run/docker.sock --noblacklist=/run/docker.sock"
     fi
 
-    printf "%-30s %-10s %-15s %s\n" "USER" "STATUS" "SIZE" "PROJECT PATH"
-    printf "%-30s %-10s %-15s %s\n" "----" "------" "----" "------------"
+    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp -- $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
+}
 
-    for user in $workers; do
-        local home_dir="/home/$user"
-        local lock_file="$LOCK_DIR/${user}.lock"
-        local status="idle"
+# Start container isolation session (podman)
+start_container_session() {
+    local continue_flag="$1"
+    # Maximum security: Podman rootless container
+    log_error "Container mode not yet implemented in this prototype"
+    log_info "Use --mode namespace for enhanced isolation"
+    return 1
+}
 
-        if [ -f "$lock_file" ]; then
-            local pid=$(cat "$lock_file" 2>/dev/null || echo "")
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                status="${YELLOW}RUNNING${NC}"
+# Start shell session (user isolation, no Claude)
+start_user_shell() {
+    log_info "Starting shell as $WORKER_USER..."
+    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && exec bash -l"
+}
+
+# Start shell session (namespace isolation, no Claude)
+start_namespace_shell() {
+    local network_flag=""
+    [ "$ALLOW_NETWORK" = false ] && network_flag="--net=none"
+
+    local docker_flags="--noroot"
+    if [ "$ALLOW_DOCKER" = true ]; then
+        docker_flags="--noblacklist=/var/run/docker.sock --noblacklist=/run/docker.sock"
+    fi
+
+    log_info "Starting shell in firejail namespace..."
+    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp -- bash -l"
+}
+
+
+# --- Module: sync.sh ---
+# lib/sync.sh
+# 
+# Sync-back logic for importing changes from worker to main repository
+# 
+# Dependencies: lib/logging.sh, lib/git.sh, lib/worker.sh, lib/vars.sh
+# Exports: detect_worker_changes, import_commits, import_uncommitted_changes, create_branch_and_import, show_sync_summary
+# 
+# Usage:
+#   source lib/sync.sh
+#   detect_worker_changes
+
+# Detect changes in worker repository (commits and uncommitted)
+# Sets global variables: WORKER_COMMITS, NUM_COMMITS, WORKER_CHANGES
+detect_worker_changes() {
+    # 1. Check for COMMITS
+    # We compare HEAD against the original branch we cloned from.
+    # Since we cloned the current dir, 'origin' in the worker points to here.
+    # First, fetch to ensure worker's view of origin is up-to-date
+    sudo -u "$WORKER_USER" git -C "$WORKER_PROJECT" fetch origin 2>/dev/null || true
+
+    WORKER_COMMITS=$(sudo -u "$WORKER_USER" git -C "$WORKER_PROJECT" log --oneline origin/$ORIGINAL_BRANCH..HEAD 2>/dev/null || echo "")
+    # Count commits using grep -c (more accurate than wc -l which counts newlines)
+    NUM_COMMITS=$(echo "$WORKER_COMMITS" | grep -c . 2>/dev/null || echo 0)
+
+    # 2. Check for UNCOMMITTED changes
+    WORKER_CHANGES=$(sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && git status --porcelain" 2>/dev/null || echo "")
+}
+
+# Show summary of detected changes
+show_sync_summary() {
+    if [ -z "$WORKER_CHANGES" ] && [ "$NUM_COMMITS" -eq 0 ]; then
+        log_info "No changes detected (committed or uncommitted)."
+        return 0
+    fi
+
+    echo "Changes detected:"
+    if [ "$NUM_COMMITS" -gt 0 ]; then
+        echo -e "${CYAN}$NUM_COMMITS new commit(s):${NC}"
+        echo "$WORKER_COMMITS" | head -10
+        [ "$NUM_COMMITS" -gt 10 ] && echo "... and more"
+    fi
+
+    if [ -n "$WORKER_CHANGES" ]; then
+        echo -e "${CYAN}Uncommitted changes:${NC}"
+        echo "$WORKER_CHANGES" | head -10
+        local change_count=$(echo "$WORKER_CHANGES" | grep -c . 2>/dev/null || echo 0)
+        [ "$change_count" -gt 10 ] && echo "... and more"
+    fi
+    echo ""
+    return 1
+}
+
+# Import commits from worker repository
+import_commits() {
+    if [ "$NUM_COMMITS" -eq 0 ]; then
+        return 0
+    fi
+
+    log_info "Importing $NUM_COMMITS commit(s) from worker..."
+    
+    # Ensure we can read the worker's git objects
+    # We grant read access to others temporarily for the .git directory
+    # Store original directory permissions to restore later (only for .git directory itself)
+    local old_git_dir_perms=$(stat -c "%a" "$WORKER_PROJECT/.git" 2>/dev/null || echo "")
+    sudo chmod -R o+rX "$WORKER_PROJECT/.git"
+    
+    # Stash any local changes (including untracked files) to avoid merge conflicts
+    local stash_created=false
+    if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        log_info "Stashing local changes (including untracked files)..."
+        git stash push -u -m "clsecure: backup before importing worker commits"
+        stash_created=true
+        log_info "✓ Local changes stashed."
+    fi
+    
+    # Fetch and merge
+    # We fetch HEAD from worker and merge it. 
+    # Since we just created the branch from the same base, this should be a fast-forward or clean merge.
+    if git pull --no-edit "$WORKER_PROJECT" HEAD; then
+        log_info "✓ Commits imported successfully."
+        
+        # Restore stashed changes if any
+        if [ "$stash_created" = true ]; then
+            echo ""
+            log_info "Restoring stashed changes..."
+            if git stash pop; then
+                log_info "✓ Stashed changes restored."
             else
-                sudo rm -f "$lock_file" 2>/dev/null || true
+                log_warn "Conflicts detected when restoring stashed changes."
+                log_warn "Please resolve conflicts manually and run: git stash drop"
             fi
-        fi
-
-        local size="N/A"
-        if [ -d "$home_dir" ]; then
-            size=$(sudo du -sh "$home_dir" 2>/dev/null | cut -f1 || echo "N/A")
-        fi
-
-        local project_path="-"
-        if [ -d "$home_dir/project/.git" ]; then
-            project_path=$(sudo -u "$user" git -C "$home_dir/project" remote get-url origin 2>/dev/null | sed 's|.*/||' | sed 's|\.git$||' || echo "-")
-        fi
-
-        printf "%-30s %-10b %-15s %s\n" "$user" "$status" "$size" "$project_path"
-    done
-
-    echo ""
-    exit 0
-}
-
-cleanup_workers() {
-    echo ""
-    echo -e "${GREEN}Claude Worker Users Cleanup:${NC}"
-    echo ""
-
-    local workers=$(getent passwd | grep "^${WORKER_PREFIX}-" | cut -d: -f1 || true)
-
-    if [ -z "$workers" ]; then
-        log_info "No worker users found."
-        exit 0
-    fi
-
-    local worker_array=($workers)
-
-    echo "Found worker users:"
-    for i in "${!worker_array[@]}"; do
-        local user="${worker_array[$i]}"
-        local lock_file="$LOCK_DIR/${user}.lock"
-        local status=""
-
-        if [ -f "$lock_file" ]; then
-            local pid=$(cat "$lock_file" 2>/dev/null || echo "")
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                status=" ${YELLOW}(RUNNING - cannot remove)${NC}"
-            fi
-        fi
-
-        echo -e "  $((i+1))) ${user}${status}"
-    done
-    echo "  q) Quit"
-    echo ""
-
-    read -p "Select user to remove (number or 'q'): " selection
-
-    if [[ "$selection" == "q" || "$selection" == "Q" ]]; then
-        exit 0
-    fi
-
-    if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le ${#worker_array[@]} ]; then
-        local user="${worker_array[$((selection-1))]}"
-        local lock_file="$LOCK_DIR/${user}.lock"
-
-        if [ -f "$lock_file" ]; then
-            local pid=$(cat "$lock_file" 2>/dev/null || echo "")
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                log_error "Cannot remove '$user' - session is still running (PID: $pid)"
-                exit 1
-            fi
-        fi
-
-        echo ""
-        read -p "Remove user '$user' and all their files? (y/n): " confirm
-        if [[ "$confirm" =~ ^[Yy]$ ]]; then
-            log_info "Removing user '$user'..."
-            sudo userdel -r "$user" 2>/dev/null || sudo userdel "$user" 2>/dev/null || true
-            sudo rm -rf "/home/$user" 2>/dev/null || true
-            sudo rm -f "$lock_file" 2>/dev/null || true
-            log_info "Done."
-        else
-            log_info "Cancelled."
         fi
     else
-        log_error "Invalid selection."
-        exit 1
+        log_error "Failed to import commits."
+        
+        # Restore stash on failure
+        if [ "$stash_created" = true ]; then
+            log_info "Restoring stashed changes..."
+            git stash pop
+        fi
+        return 1
     fi
-
-    exit 0
-}
-
-cleanup_all_workers() {
-    echo ""
-    echo -e "${RED}WARNING: This will remove ALL claude-worker users and their files.${NC}"
-    echo ""
-
-    local workers=$(getent passwd | grep "^${WORKER_PREFIX}-" | cut -d: -f1 || true)
-
-    if [ -z "$workers" ]; then
-        log_info "No worker users found."
-        exit 0
-    fi
-
-    echo "Users to be removed:"
-    for user in $workers; do
-        echo "  - $user"
-    done
-    echo ""
-
-    read -p "Type 'DELETE ALL' to confirm: " confirm
-    if [ "$confirm" = "DELETE ALL" ]; then
-        for user in $workers; do
-            local lock_file="$LOCK_DIR/${user}.lock"
-
-            if [ -f "$lock_file" ]; then
-                local pid=$(cat "$lock_file" 2>/dev/null || echo "")
-                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    log_warn "Skipping '$user' - still running (PID: $pid)"
-                    continue
-                fi
-            fi
-
-            log_info "Removing '$user'..."
-            sudo userdel -r "$user" 2>/dev/null || sudo userdel "$user" 2>/dev/null || true
-            sudo rm -rf "/home/$user" 2>/dev/null || true
-            sudo rm -f "$lock_file" 2>/dev/null || true
-        done
-        log_info "Done."
+    
+    # Restore original git permissions for security
+    # Restore directory permissions to .git directory itself, then remove world access from contents
+    if [ -n "$old_git_dir_perms" ]; then
+        # Restore directory permissions to .git itself (not recursive)
+        sudo chmod "$old_git_dir_perms" "$WORKER_PROJECT/.git" 2>/dev/null || true
+        # Remove world read access from all files and directories inside .git
+        # Use find to apply different permissions to files vs directories
+        sudo find "$WORKER_PROJECT/.git" -type f -exec chmod o-r {} \; 2>/dev/null || true
+        sudo find "$WORKER_PROJECT/.git" -type d -exec chmod o-rX {} \; 2>/dev/null || true
     else
-        log_info "Cancelled."
+        # Default to removing world read access if we don't know original perms
+        # Remove world read from files, world read+execute from directories
+        sudo find "$WORKER_PROJECT/.git" -type f -exec chmod o-r {} \; 2>/dev/null || true
+        sudo find "$WORKER_PROJECT/.git" -type d -exec chmod o-rX {} \; 2>/dev/null || true
+    fi
+    
+    return 0
+}
+
+# Import uncommitted changes from worker repository
+import_uncommitted_changes() {
+    if [ -z "$WORKER_CHANGES" ]; then
+        return 0
     fi
 
+    log_info "Syncing uncommitted changes..."
+    sudo rsync -av \
+        --exclude='.git' \
+        --exclude='node_modules' \
+        --exclude='venv' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='.pytest_cache' \
+        --exclude='dist' \
+        --exclude='build' \
+        --exclude='.next' \
+        --exclude='target' \
+        "$WORKER_PROJECT/" "$CURRENT_DIR/"
+    
+    sudo chown -R "$(whoami):$(id -gn)" "$CURRENT_DIR"
+    
+    log_info "✓ Uncommitted changes applied."
+    
+    echo ""
+    git status --short
+    echo ""
+    
+    read -p "Commit these changes now? (y/n): " commit_now
+    if [[ "$commit_now" =~ ^[Yy]$ ]]; then
+         read -p "Commit message [WIP from Claude]: " commit_msg
+         commit_msg=${commit_msg:-"WIP from Claude"}
+         git add -A
+         git commit -m "$commit_msg"
+         log_info "✓ Committed."
+    fi
+    
+    return 0
+}
+
+# Create branch and import all work (commits + changes)
+create_branch_and_import() {
+    local timestamp=$(date +%Y%m%d-%H%M%S)
+    local default_branch="claude/${SAFE_PROJECT_NAME}-${timestamp}"
+    
+    read -p "Branch name [$default_branch]: " branch_name
+    branch_name=${branch_name:-$default_branch}
+    
+    # Use bash built-in pattern matching instead of echo | grep (more efficient)
+    if [[ ! "$branch_name" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
+        log_error "Invalid branch name."
+        return 1
+    fi
+    
+    if git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
+        log_error "Branch already exists."
+        return 1
+    fi
+    
+    log_info "Creating branch '$branch_name'..."
+    git checkout -b "$branch_name"
+    
+    # Import Commits
+    if ! import_commits; then
+        return 1
+    fi
+    
+    # Sync Uncommitted Changes
+    import_uncommitted_changes
+    
+    # Push / PR logic (simplified from original)
+    echo ""
+    read -p "Push branch '$branch_name'? (y/n): " push_now
+    if [[ "$push_now" =~ ^[Yy]$ ]]; then
+        git push -u origin "$branch_name"
+    fi
+    
+    echo ""
+    read -p "Switch back to '$ORIGINAL_BRANCH'? (y/n): " switch
+    [[ "$switch" =~ ^[Yy]$ ]] && git checkout "$ORIGINAL_BRANCH"
+    
+    echo ""
+    read -p "Remove worker user '$WORKER_USER'? (y/n): " cleanup
+    if [[ "$cleanup" =~ ^[Yy]$ ]]; then
+        sudo userdel -r "$WORKER_USER" 2>/dev/null || true
+        log_info "User removed."
+    fi
+    
+    return 0
+}
+
+
+# Initialize all global variables
+init_clsecure_vars
+
+
+# ============================================================================
+# Main Script (orchestration, CLI parsing, execution flow)
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/lib"
+
+# Phase 1: Initialize variables FIRST (before sourcing other modules)
+
+# Phase 2: Source modules in dependency order
+# Level 1: No dependencies (but uses vars for colors)
+
+# Level 2: Depends on logging + vars
+
+# Level 3: Depends on logging + config/vars
+
+# Level 4: Depends on logging + worker + vars
+
+# Level 5: Depends on logging + git + worker + vars
+
+
+show_help() {
+    cat << EOF
+Usage: clsecure [OPTIONS]
+
+Run Claude Code with enhanced isolation (User + Namespace).
+
+OPTIONS:
+    --help, -h          Show this help message
+    --list, -l          List all claude-worker users and their status
+    --cleanup           Interactively remove worker users
+    --cleanup-all       Remove ALL claude-worker users (requires confirmation)
+    --mode MODE         Isolation mode: user, namespace (default), container
+    --allow-network     Allow network access (default: from config or true)
+    --no-network        Disable network access (--net=none in firejail)
+    --allow-docker      Allow access to Docker (WARNING: reduces isolation)
+    --no-docker         Disable Docker access (default)
+    --install-deps      Install project dependencies (npm/pip) on startup
+    --config            Show current configuration and config file location
+    --info              Show isolation details for current mode
+    --shell             Start shell instead of Claude (for debugging)
+    --skip-setup        Skip setup script execution
+    --full-clone        Clone full git history (slower, default is shallow)
+
+ISOLATION MODES:
+    user                Basic user isolation (original clsecure behavior)
+    namespace           User + Namespace (firejail) - RECOMMENDED
+    container           User + Container (podman rootless) - MAXIMUM SECURITY
+
+CONFIGURATION FILE:
+    Settings can be configured in ~/.config/clsecure/config or ~/.clsecurerc
+    Command-line arguments override config file settings.
+
+    Example config file:
+        # Default isolation mode
+        mode = namespace
+
+        # Allow network access (true/false)
+        network = true
+
+        # Allow Docker access (true/false)
+        docker = false
+
+        # Install project dependencies (true/false)
+        install_dependencies = false
+
+REQUIREMENTS:
+    - git (must be run from a git repository)
+    - rsync
+    - sudo privileges
+    - For namespace mode: firejail
+    - For container mode: podman
+
+EXAMPLES:
+    # Run with recommended namespace isolation
+    clsecure
+
+    # Run with network disabled
+    clsecure --no-network
+
+    # Run with Docker access (for docker-compose)
+    clsecure --allow-docker
+
+    # Run with basic user isolation only
+    clsecure --mode user
+
+    # Show config file and current settings
+    clsecure --config
+
+    # Show isolation details
+    clsecure --info
+
+SECURITY MODEL:
+    User isolation:      Dedicated Linux user per project
+    Namespace isolation: + Firejail sandbox (PID, mount, network, IPC)
+    Container isolation: + Full containerization (podman rootless)
+
+EOF
     exit 0
 }
+
+
 
 check_requirements() {
     local missing=()
@@ -759,82 +1564,9 @@ check_requirements() {
     fi
 }
 
-acquire_lock() {
-    mkdir -p "$LOCK_DIR" 2>/dev/null || sudo mkdir -p "$LOCK_DIR"
-    sudo chmod 1777 "$LOCK_DIR" 2>/dev/null || true
-
-    # Use flock for atomic lock acquisition to prevent race conditions
-    # Try to acquire lock with timeout of 0 (non-blocking)
-    if command -v flock &>/dev/null; then
-        # Use a temporary file descriptor to capture subshell exit code
-        # The subshell's exit code determines if we got the lock
-        if ! (
-            flock -n 9 || exit 1
-            # Check if existing lock file has a valid process
-            if [ -f "$LOCK_FILE" ]; then
-                local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                    exit 1
-                fi
-                rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE"
-            fi
-            # Write our PID to lock file
-            echo $$ > "$LOCK_FILE" 2>/dev/null || echo $$ | sudo tee "$LOCK_FILE" > /dev/null
-            exit 0
-        ) 9>"$LOCK_FILE"; then
-            # Subshell exited with non-zero (lock failed)
-            return 1
-        fi
-        # Subshell exited with zero (lock acquired)
-        return 0
-    else
-        # Fallback to original method if flock not available
-        if [ -f "$LOCK_FILE" ]; then
-            local pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-                return 1
-            fi
-            rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE"
-        fi
-        echo $$ > "$LOCK_FILE" 2>/dev/null || echo $$ | sudo tee "$LOCK_FILE" > /dev/null
-        return 0
-    fi
-}
-
-release_lock() {
-    rm -f "$LOCK_FILE" 2>/dev/null || sudo rm -f "$LOCK_FILE" 2>/dev/null || true
-}
-
-cleanup_on_exit() {
-    release_lock
-}
-trap cleanup_on_exit EXIT
-
-# Install dependencies helper
-install_project_dependencies() {
-    log_step "Installing project dependencies..."
-    
-    if [ -f "$WORKER_PROJECT/package.json" ]; then
-        log_info "Found package.json, running npm install..."
-        sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && source \"$WORKER_HOME/.bashrc\" && npm install"
-    fi
-
-    if [ -f "$WORKER_PROJECT/requirements.txt" ]; then
-        log_info "Found requirements.txt..."
-        if [ ! -d "$WORKER_PROJECT/venv" ] && [ ! -d "$WORKER_PROJECT/.venv" ]; then
-            log_info "Creating virtual environment..."
-            sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && python3 -m venv venv"
-        fi
-        
-        VENV_DIR="$WORKER_PROJECT/venv"
-        if [ -d "$WORKER_PROJECT/.venv" ]; then
-            VENV_DIR="$WORKER_PROJECT/.venv"
-        fi
-        
-        log_info "Installing pip requirements in $VENV_DIR..."
-        sudo -u "$WORKER_USER" bash -c "source '$VENV_DIR/bin/activate' && pip install -r '$WORKER_PROJECT/requirements.txt'"
-    fi
-}
+# Note: Trap handler will be registered after lock acquisition (line ~273)
+# This ensures cleanup happens even on early exits (e.g., missing git repo, missing Claude CLI)
+# The trap must be registered AFTER acquire_lock succeeds, so the lock is released on exit
 
 # ------------------------------------------------------------------------------
 # Load configuration file (before parsing CLI args)
@@ -892,6 +1624,18 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DEPS=true
             shift
             ;;
+        --shell)
+            SHELL_ONLY=true
+            shift
+            ;;
+        --skip-setup)
+            SKIP_SETUP=true
+            shift
+            ;;
+        --full-clone)
+            FULL_CLONE=true
+            shift
+            ;;
         *)
             log_error "Unknown option: $1"
             show_help
@@ -935,6 +1679,7 @@ if [ -z "$ORIGINAL_BRANCH" ]; then
     ORIGINAL_BRANCH=$(git rev-parse --short HEAD)
     log_warn "Detached HEAD state. Using commit: $ORIGINAL_BRANCH"
 fi
+export ORIGINAL_BRANCH  # Export so it's available in sync.sh functions
 
 # Warn if on a claude/* branch (temporary branch from previous session)
 if [[ "$ORIGINAL_BRANCH" =~ ^claude/ ]]; then
@@ -965,25 +1710,14 @@ if ! acquire_lock; then
     exit 1
 fi
 
+# Register trap handler early (after lock acquisition) to ensure cleanup on early exits
+# This is critical: if script exits early (e.g., missing git repo, missing Claude CLI),
+# the trap must be registered to release the lock
+trap cleanup_on_exit EXIT
+
 # Create worker user if needed
 log_step "Setting up worker user '$WORKER_USER'..."
-
-if ! id "$WORKER_USER" &>/dev/null; then
-    log_info "Creating user '$WORKER_USER'..."
-    sudo useradd -m -s /bin/bash "$WORKER_USER"
-    log_info "User created."
-else
-    log_info "User already exists."
-fi
-
-# Add to docker group if docker exists and docker access is allowed
-if command -v docker &>/dev/null && [ "$ALLOW_DOCKER" = true ]; then
-    if ! groups "$WORKER_USER" 2>/dev/null | grep -q '\bdocker\b'; then
-        log_warn "Adding worker to docker group (grants root-equivalent access)"
-        log_info "Adding to docker group..."
-        sudo usermod -aG docker "$WORKER_USER"
-    fi
-fi
+create_worker_user
 
 # Handle existing project files
 SKIP_COPY=false
@@ -1027,81 +1761,23 @@ if [ "$SKIP_COPY" = false ]; then
 
     # Check available disk space before cloning
     REQUIRED_SPACE_MB=1000  # Estimate: 1GB minimum
-    if command -v df &>/dev/null; then
-        AVAILABLE_SPACE=$(df -m "$WORKER_HOME" 2>/dev/null | tail -1 | awk '{print $4}' || echo "0")
-        if [ "$AVAILABLE_SPACE" -lt "$REQUIRED_SPACE_MB" ] 2>/dev/null; then
-            log_error "Insufficient disk space (need ${REQUIRED_SPACE_MB}MB, have ${AVAILABLE_SPACE}MB)"
-            log_info "Free up space or use a different location"
-            release_lock
-            exit 1
-        fi
-    fi
-
-    sudo rm -rf "$WORKER_PROJECT" 2>/dev/null || true
-
-    log_info "Cloning repository (with full git history)..."
-    # Clone without submodules to avoid SSH key requirements for worker user
-    # We'll copy submodules from the source directory instead
-    if ! sudo git clone --no-hardlinks --quiet "$CURRENT_DIR" "$WORKER_PROJECT"; then
-        log_error "Failed to clone repository"
+    if ! check_disk_space "$REQUIRED_SPACE_MB"; then
         release_lock
         exit 1
     fi
 
-    log_info "Syncing working directory..."
-    sudo rsync -a \
-        --exclude='.git' \
-        --exclude='node_modules' \
-        --exclude='venv' \
-        --exclude='.venv' \
-        --exclude='__pycache__' \
-        --exclude='.pytest_cache' \
-        --exclude='dist' \
-        --exclude='build' \
-        --exclude='.next' \
-        --exclude='target' \
-        "$CURRENT_DIR/" "$WORKER_PROJECT/"
-
-    # Copy submodules from source if they exist
-    # This avoids needing SSH keys since we're copying from the already-cloned source
-    if [ -f "$CURRENT_DIR/.gitmodules" ] && [ -d "$CURRENT_DIR/.git/modules" ]; then
-        log_info "Copying submodules from source..."
-        
-        # Copy .git/modules directory (contains submodule git repositories)
-        if ! sudo cp -r "$CURRENT_DIR/.git/modules" "$WORKER_PROJECT/.git/modules" 2>/dev/null; then
-            log_warn "Failed to copy submodules - they may not work correctly"
-        fi
-        
-        # Fix .git pointers in submodule directories to point to local .git/modules
-        # Use git config to properly read submodule paths (more robust than parsing .gitmodules)
-        # Use process substitution to avoid subshell issues
-        while IFS= read -r line; do
-            # Line format: "submodule.<name>.path <path>"
-            # Extract path value (everything after the FIRST space, not last)
-            # Use read with IFS to split on first space only
-            IFS=' ' read -r _ submodule_path <<< "$line"
-            # Trim leading/trailing whitespace
-            submodule_path="${submodule_path#"${submodule_path%%[![:space:]]*}"}"
-            submodule_path="${submodule_path%"${submodule_path##*[![:space:]]}"}"
-            
-            if [ -n "$submodule_path" ] && [ -d "$WORKER_PROJECT/$submodule_path" ]; then
-                # Git stores submodules in .git/modules using the path name
-                gitdir_path="$WORKER_PROJECT/.git/modules/$submodule_path"
-                if [ -d "$gitdir_path" ]; then
-                    # Remove existing .git file or directory
-                    sudo rm -rf "$WORKER_PROJECT/$submodule_path/.git" 2>/dev/null || true
-                    # Create .git file pointing to .git/modules
-                    echo "gitdir: $gitdir_path" | sudo tee "$WORKER_PROJECT/$submodule_path/.git" > /dev/null
-                fi
-            fi
-        done < <(git config --file "$CURRENT_DIR/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+    if ! clone_repository; then
+        release_lock
+        exit 1
     fi
+
+    sync_working_directory
+    copy_submodules
 
     log_info "Project ready at $WORKER_PROJECT"
 fi
 
-sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME"
-sudo chmod 755 "$WORKER_HOME"
+setup_worker_home
 
 # Make sure project-local MCP config is portable across worker users
 sanitize_mcp_config
@@ -1110,24 +1786,30 @@ sanitize_mcp_config
 log_step "Setting up configurations..."
 
 if [ -d "$HOME/.claude" ]; then
+    log_info "Copying Claude config (excluding large files)..."
     sudo mkdir -p "$WORKER_HOME/.claude"
-    sudo cp -r "$HOME/.claude/." "$WORKER_HOME/.claude/" 2>/dev/null || true
+    # Use rsync to exclude large unnecessary files for faster copy
+    sudo rsync -a \
+        --exclude='debug' \
+        --exclude='file-history' \
+        --exclude='history.jsonl' \
+        --exclude='cache' \
+        --exclude='paste-cache' \
+        --exclude='plans' \
+        --exclude='__store.db' \
+        --exclude='*.db' \
+        --exclude='*.log' \
+        --exclude='venv' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='.git' \
+        --exclude='node_modules' \
+        "$HOME/.claude/" "$WORKER_HOME/.claude/" 2>/dev/null || true
     sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude"
     sanitize_worker_claude_home_paths
 fi
 
-GIT_USER_NAME="$(git config user.name 2>/dev/null || echo "")"
-GIT_USER_EMAIL="$(git config user.email 2>/dev/null || echo "")"
-
-if [ -n "$GIT_USER_NAME" ] || [ -n "$GIT_USER_EMAIL" ]; then
-    # Use git config command to safely set values (avoids injection risk)
-    if [ -n "$GIT_USER_NAME" ]; then
-        sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.name "$GIT_USER_NAME"
-    fi
-    if [ -n "$GIT_USER_EMAIL" ]; then
-        sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.email "$GIT_USER_EMAIL"
-    fi
-fi
+setup_git_config
 
 # Setup shell environment
 log_step "Setting up shell environment..."
@@ -1162,6 +1844,7 @@ log_step "Checking Claude CLI..."
 if [ -x "/home/linuxbrew/.linuxbrew/bin/claude" ]; then
     log_info "Claude CLI found."
     CLAUDE_BIN="/home/linuxbrew/.linuxbrew/bin/claude"
+    export CLAUDE_BIN  # Export so it's available in subshells (isolation.sh functions)
 else
     log_error "Claude CLI not found at /home/linuxbrew/.linuxbrew/bin/claude"
     log_info "Install with: brew install claude-code"
@@ -1169,51 +1852,16 @@ else
     exit 1
 fi
 
-# Install task-master-ai
-log_step "Checking task-master-ai..."
+# Install task-master-ai (with npm cache copy and retry)
+install_task_master 2
 
-if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && command -v task-master" &>/dev/null; then
-    log_info "task-master-ai already installed."
+# Run setup script if configured (optional - failures should not terminate script)
+if [ "$SKIP_SETUP" = true ]; then
+    log_info "Skipping setup script (--skip-setup)"
 else
-    log_info "Installing task-master-ai..."
-    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && npm install -g task-master-ai" || {
-        log_warn "Failed to install task-master-ai. Continuing anyway..."
+    run_setup_script || {
+        log_warn "Setup script execution failed, but continuing..."
     }
-fi
-
-# Run setup script if configured
-if [ -n "$SETUP_SCRIPT" ]; then
-    log_step "Running setup script..."
-    if [ -f "$SETUP_SCRIPT" ]; then
-        WORKER_SETUP_SCRIPT="$WORKER_HOME/setup_script.sh"
-        sudo cp "$SETUP_SCRIPT" "$WORKER_SETUP_SCRIPT"
-        sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_SETUP_SCRIPT"
-        sudo chmod +x "$WORKER_SETUP_SCRIPT"
-        
-        # Capture GH_TOKEN if available
-        # Priority: Env var -> gh auth token
-        GH_TOKEN_VAL="${GH_TOKEN:-}"
-        if [ -z "$GH_TOKEN_VAL" ] && command -v gh &>/dev/null; then
-             GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
-        fi
-
-        log_info "Executing $SETUP_SCRIPT..."
-        if [ -n "$GH_TOKEN_VAL" ]; then
-             if sudo -u "$WORKER_USER" GH_TOKEN="$GH_TOKEN_VAL" bash -c "cd && source ~/.bashrc && $WORKER_SETUP_SCRIPT"; then
-                 log_info "Setup script executed successfully."
-             else
-                 log_warn "Setup script failed."
-             fi
-        else
-             if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && $WORKER_SETUP_SCRIPT"; then
-                 log_info "Setup script executed successfully."
-             else
-                 log_warn "Setup script failed."
-             fi
-        fi
-    else
-        log_warn "Setup script configured but not found: $SETUP_SCRIPT"
-    fi
 fi
 
 # Install dependencies if requested
@@ -1223,12 +1871,18 @@ fi
 
 
 # ------------------------------------------------------------------------------
-# Start Claude session with selected isolation
+# Start session with selected isolation
 # ------------------------------------------------------------------------------
 echo ""
-echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║     Starting Claude Code Session       ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+if [ "$SHELL_ONLY" = true ]; then
+    echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║     Starting Debug Shell Session       ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+else
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║     Starting Claude Code Session       ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+fi
 echo ""
 log_info "User: $WORKER_USER"
 log_info "Project: $WORKER_PROJECT"
@@ -1242,59 +1896,54 @@ if [ "$SKIP_COPY" = true ]; then
     log_info "Resuming previous Claude session..."
 fi
 
-echo -e "${YELLOW}Type /exit or press Ctrl+C to end session.${NC}"
+if [ "$SHELL_ONLY" = true ]; then
+    echo -e "${YELLOW}Type 'exit' to end shell session.${NC}"
+else
+    echo -e "${YELLOW}Type /exit or press Ctrl+C to end session.${NC}"
+fi
 echo ""
 
 set +e
 
-case $ISOLATION_MODE in
-    user)
-        # Original behavior: just run as worker user
-        # Pass GH_TOKEN if available to the session too
-        GH_TOKEN_VAL="${GH_TOKEN:-}"
-        if [ -z "$GH_TOKEN_VAL" ] && command -v gh &>/dev/null; then
-             GH_TOKEN_VAL=$(gh auth token 2>/dev/null || echo "")
-        fi
-        
-        # Use env command to safely pass environment variables (avoids command injection)
-        if [ -n "$GH_TOKEN_VAL" ]; then
-            sudo -u "$WORKER_USER" env GH_TOKEN="$GH_TOKEN_VAL" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
-        else
-            sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
-        fi
-        ;;
-
-    namespace)
-        # Enhanced: Add firejail namespace isolation
-        NETWORK_FLAG=""
-        [ "$ALLOW_NETWORK" = false ] && NETWORK_FLAG="--net=none"
-
-        # Docker support
-        DOCKER_FLAGS="--noroot"
-        if [ "$ALLOW_DOCKER" = true ]; then
-            # Docker access requires disabling User Namespace (--noroot) to preserve group permissions
-            # and ensuring the socket is accessible
-            DOCKER_FLAGS="--noblacklist=/var/run/docker.sock --noblacklist=/run/docker.sock"
-        fi
-
-        sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $NETWORK_FLAG --private-dev --private-tmp $DOCKER_FLAGS --caps.drop=all --seccomp -- $CLAUDE_BIN --dangerously-skip-permissions $CONTINUE_FLAG"
-        ;;
-
-    container)
-        # Maximum security: Podman rootless container
-        log_error "Container mode not yet implemented in this prototype"
-        log_info "Use --mode namespace for enhanced isolation"
-        release_lock
-        exit 1
-        ;;
-esac
+if [ "$SHELL_ONLY" = true ]; then
+    # Shell-only mode for debugging
+    case $ISOLATION_MODE in
+        user)
+            start_user_shell
+            ;;
+        namespace)
+            start_namespace_shell
+            ;;
+        container)
+            log_error "Shell mode not implemented for container isolation"
+            release_lock
+            exit 1
+            ;;
+    esac
+else
+    # Normal Claude session
+    case $ISOLATION_MODE in
+        user)
+            start_user_session "$CONTINUE_FLAG"
+            ;;
+        namespace)
+            start_namespace_session "$CONTINUE_FLAG"
+            ;;
+        container)
+            if ! start_container_session "$CONTINUE_FLAG"; then
+                release_lock
+                exit 1
+            fi
+            ;;
+    esac
+fi
 
 CLAUDE_EXIT_CODE=$?
 # Keep set +e for the change detection phase to avoid premature exits
 set +e
 
 # ------------------------------------------------------------------------------
-# Step 11: Handle changes (Commits + Uncommitted)
+# Handle changes (Commits + Uncommitted)
 # ------------------------------------------------------------------------------
 echo ""
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
@@ -1302,24 +1951,13 @@ echo -e "${GREEN}║     Session Ended                      ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
 echo ""
 
-# 1. Check for COMMITS
-# We compare HEAD against the original branch we cloned from.
-# Since we cloned the current dir, 'origin' in the worker points to here.
-# First, fetch to ensure worker's view of origin is up-to-date
-sudo -u "$WORKER_USER" git -C "$WORKER_PROJECT" fetch origin 2>/dev/null || true
+# Detect changes (sets WORKER_COMMITS, NUM_COMMITS, WORKER_CHANGES)
+set +e  # Temporarily disable strict error handling for change detection
+detect_worker_changes
+set -e  # Re-enable strict error handling after safely gathering change information
 
-WORKER_COMMITS=$(sudo -u "$WORKER_USER" git -C "$WORKER_PROJECT" log --oneline origin/$ORIGINAL_BRANCH..HEAD 2>/dev/null || echo "")
-# Count commits using grep -c (more accurate than wc -l which counts newlines)
-NUM_COMMITS=$(echo "$WORKER_COMMITS" | grep -c . 2>/dev/null || echo 0)
-
-# 2. Check for UNCOMMITTED changes
-WORKER_CHANGES=$(sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && git status --porcelain" 2>/dev/null || echo "")
-
-# Re-enable set -e after safely gathering change information
-set -e
-
-if [ -z "$WORKER_CHANGES" ] && [ "$NUM_COMMITS" -eq 0 ]; then
-    log_info "No changes detected (committed or uncommitted)."
+if show_sync_summary; then
+    # No changes detected
     echo ""
     read -p "Remove worker user '$WORKER_USER'? (y/n): " cleanup
     if [[ "$cleanup" =~ ^[Yy]$ ]]; then
@@ -1330,21 +1968,6 @@ if [ -z "$WORKER_CHANGES" ] && [ "$NUM_COMMITS" -eq 0 ]; then
     exit 0
 fi
 
-echo "Changes detected:"
-if [ "$NUM_COMMITS" -gt 0 ]; then
-    echo -e "${CYAN}$NUM_COMMITS new commit(s):${NC}"
-    echo "$WORKER_COMMITS" | head -10
-    [ "$NUM_COMMITS" -gt 10 ] && echo "... and more"
-fi
-
-if [ -n "$WORKER_CHANGES" ]; then
-    echo -e "${CYAN}Uncommitted changes:${NC}"
-    echo "$WORKER_CHANGES" | head -10
-    CHANGE_COUNT=$(echo "$WORKER_CHANGES" | grep -c . 2>/dev/null || echo 0)
-    [ "$CHANGE_COUNT" -gt 10 ] && echo "... and more"
-fi
-echo ""
-
 echo "Options:"
 echo "  1) Create branch and import ALL work (commits + changes)"
 echo "  2) Discard changes and remove user"
@@ -1354,149 +1977,15 @@ read -p "Choose (1/2/3): " OPTION
 
 case $OPTION in
     1)
-        TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-        DEFAULT_BRANCH="claude/${SAFE_PROJECT_NAME}-${TIMESTAMP}"
-        
-        read -p "Branch name [$DEFAULT_BRANCH]: " BRANCH_NAME
-        BRANCH_NAME=${BRANCH_NAME:-$DEFAULT_BRANCH}
-        
-        # Use bash built-in pattern matching instead of echo | grep (more efficient)
-        if [[ ! "$BRANCH_NAME" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
-            log_error "Invalid branch name."
+        if ! create_branch_and_import; then
             exit 1
-        fi
-        
-        if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME" 2>/dev/null; then
-            log_error "Branch already exists."
-            exit 1
-        fi
-        
-        log_info "Creating branch '$BRANCH_NAME'..."
-        git checkout -b "$BRANCH_NAME"
-        
-        # Import Commits
-        if [ "$NUM_COMMITS" -gt 0 ]; then
-            log_info "Importing $NUM_COMMITS commit(s) from worker..."
-            
-            # Ensure we can read the worker's git objects
-            # We grant read access to others temporarily for the .git directory
-            # Store original directory permissions to restore later (only for .git directory itself)
-            OLD_GIT_DIR_PERMS=$(stat -c "%a" "$WORKER_PROJECT/.git" 2>/dev/null || echo "")
-            sudo chmod -R o+rX "$WORKER_PROJECT/.git"
-            
-            # Stash any local changes (including untracked files) to avoid merge conflicts
-            STASH_CREATED=false
-            if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
-                log_info "Stashing local changes (including untracked files)..."
-                git stash push -u -m "clsecure: backup before importing worker commits"
-                STASH_CREATED=true
-                log_info "✓ Local changes stashed."
-            fi
-            
-            # Fetch and merge
-            # We fetch HEAD from worker and merge it. 
-            # Since we just created the branch from the same base, this should be a fast-forward or clean merge.
-            if git pull --no-edit "$WORKER_PROJECT" HEAD; then
-                log_info "✓ Commits imported successfully."
-                
-                # Restore stashed changes if any
-                if [ "$STASH_CREATED" = true ]; then
-                    echo ""
-                    log_info "Restoring stashed changes..."
-                    if git stash pop; then
-                        log_info "✓ Stashed changes restored."
-                    else
-                        log_warn "Conflicts detected when restoring stashed changes."
-                        log_warn "Please resolve conflicts manually and run: git stash drop"
-                    fi
-                fi
-            else
-                log_error "Failed to import commits."
-                
-                # Restore stash on failure
-                if [ "$STASH_CREATED" = true ]; then
-                    log_info "Restoring stashed changes..."
-                    git stash pop
-                fi
-                exit 1
-            fi
-            
-            # Restore original git permissions for security
-            # Restore directory permissions to .git directory itself, then remove world access from contents
-            if [ -n "$OLD_GIT_DIR_PERMS" ]; then
-                # Restore directory permissions to .git itself (not recursive)
-                sudo chmod "$OLD_GIT_DIR_PERMS" "$WORKER_PROJECT/.git" 2>/dev/null || true
-                # Remove world read access from all files and directories inside .git
-                # Use find to apply different permissions to files vs directories
-                sudo find "$WORKER_PROJECT/.git" -type f -exec chmod o-r {} \; 2>/dev/null || true
-                sudo find "$WORKER_PROJECT/.git" -type d -exec chmod o-rX {} \; 2>/dev/null || true
-            else
-                # Default to removing world read access if we don't know original perms
-                # Remove world read from files, world read+execute from directories
-                sudo find "$WORKER_PROJECT/.git" -type f -exec chmod o-r {} \; 2>/dev/null || true
-                sudo find "$WORKER_PROJECT/.git" -type d -exec chmod o-rX {} \; 2>/dev/null || true
-            fi
-        fi
-        
-        # Sync Uncommitted Changes
-        if [ -n "$WORKER_CHANGES" ]; then
-            log_info "Syncing uncommitted changes..."
-            sudo rsync -av \
-                --exclude='.git' \
-                --exclude='node_modules' \
-                --exclude='venv' \
-                --exclude='.venv' \
-                --exclude='__pycache__' \
-                --exclude='.pytest_cache' \
-                --exclude='dist' \
-                --exclude='build' \
-                --exclude='.next' \
-                --exclude='target' \
-                "$WORKER_PROJECT/" "$CURRENT_DIR/"
-            
-            sudo chown -R "$(whoami):$(id -gn)" "$CURRENT_DIR"
-            
-            log_info "✓ Uncommitted changes applied."
-            
-            echo ""
-            git status --short
-            echo ""
-            
-            read -p "Commit these changes now? (y/n): " COMMIT_NOW
-            if [[ "$COMMIT_NOW" =~ ^[Yy]$ ]]; then
-                 read -p "Commit message [WIP from Claude]: " COMMIT_MSG
-                 COMMIT_MSG=${COMMIT_MSG:-"WIP from Claude"}
-                 git add -A
-                 git commit -m "$COMMIT_MSG"
-                 log_info "✓ Committed."
-            fi
-        fi
-        
-        # Push / PR logic (simplified from original)
-        echo ""
-        read -p "Push branch '$BRANCH_NAME'? (y/n): " PUSH_NOW
-        if [[ "$PUSH_NOW" =~ ^[Yy]$ ]]; then
-            git push -u origin "$BRANCH_NAME"
-        fi
-        
-        echo ""
-        read -p "Switch back to '$ORIGINAL_BRANCH'? (y/n): " SWITCH
-        [[ "$SWITCH" =~ ^[Yy]$ ]] && git checkout "$ORIGINAL_BRANCH"
-        
-        echo ""
-        read -p "Remove worker user '$WORKER_USER'? (y/n): " CLEANUP
-        if [[ "$CLEANUP" =~ ^[Yy]$ ]]; then
-            sudo userdel -r "$WORKER_USER" 2>/dev/null || true
-            log_info "User removed."
         fi
         ;;
-        
     2)
         log_warn "Removing user and all changes..."
         sudo userdel -r "$WORKER_USER" 2>/dev/null || true
         log_info "Done."
         ;;
-        
     3)
         log_info "Keeping user '$WORKER_USER' for later."
         echo "Resume by running 'clsecure' from the same project."
@@ -1506,3 +1995,6 @@ esac
 release_lock
 echo ""
 log_info "Done!"
+
+# Register trap handler after all initialization
+trap cleanup_on_exit EXIT

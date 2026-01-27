@@ -1,0 +1,570 @@
+#!/bin/bash
+
+# clsecure - Enhanced isolation with User + Namespace (Firejail)
+# Runs Claude Code in an isolated environment with user and namespace isolation
+
+set -euo pipefail
+
+# ------------------------------------------------------------------------------
+# Module Loading
+# ------------------------------------------------------------------------------
+# Determine script directory (handles symlinks and PATH scenarios)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/lib"
+
+# Phase 1: Initialize variables FIRST (before sourcing other modules)
+source "${LIB_DIR}/vars.sh"
+init_clsecure_vars  # Initialize all global variables
+
+# Phase 2: Source modules in dependency order
+# Level 1: No dependencies (but uses vars for colors)
+source "${LIB_DIR}/logging.sh"
+
+# Level 2: Depends on logging + vars
+source "${LIB_DIR}/lock.sh"
+source "${LIB_DIR}/config.sh"
+
+# Level 3: Depends on logging + config/vars
+source "${LIB_DIR}/worker.sh"
+
+# Level 4: Depends on logging + worker + vars
+source "${LIB_DIR}/git.sh"
+source "${LIB_DIR}/sanitize.sh"
+source "${LIB_DIR}/deps.sh"
+source "${LIB_DIR}/isolation.sh"
+
+# Level 5: Depends on logging + git + worker + vars
+source "${LIB_DIR}/sync.sh"
+
+
+show_help() {
+    cat << EOF
+Usage: clsecure [OPTIONS]
+
+Run Claude Code with enhanced isolation (User + Namespace).
+
+OPTIONS:
+    --help, -h          Show this help message
+    --list, -l          List all claude-worker users and their status
+    --cleanup           Interactively remove worker users
+    --cleanup-all       Remove ALL claude-worker users (requires confirmation)
+    --mode MODE         Isolation mode: user, namespace (default), container
+    --allow-network     Allow network access (default: from config or true)
+    --no-network        Disable network access (--net=none in firejail)
+    --allow-docker      Allow access to Docker (WARNING: reduces isolation)
+    --no-docker         Disable Docker access (default)
+    --install-deps      Install project dependencies (npm/pip) on startup
+    --config            Show current configuration and config file location
+    --info              Show isolation details for current mode
+    --shell             Start shell instead of Claude (for debugging)
+    --skip-setup        Skip setup script execution
+    --full-clone        Clone full git history (slower, default is shallow)
+
+ISOLATION MODES:
+    user                Basic user isolation (original clsecure behavior)
+    namespace           User + Namespace (firejail) - RECOMMENDED
+    container           User + Container (podman rootless) - MAXIMUM SECURITY
+
+CONFIGURATION FILE:
+    Settings can be configured in ~/.config/clsecure/config or ~/.clsecurerc
+    Command-line arguments override config file settings.
+
+    Example config file:
+        # Default isolation mode
+        mode = namespace
+
+        # Allow network access (true/false)
+        network = true
+
+        # Allow Docker access (true/false)
+        docker = false
+
+        # Install project dependencies (true/false)
+        install_dependencies = false
+
+REQUIREMENTS:
+    - git (must be run from a git repository)
+    - rsync
+    - sudo privileges
+    - For namespace mode: firejail
+    - For container mode: podman
+
+EXAMPLES:
+    # Run with recommended namespace isolation
+    clsecure
+
+    # Run with network disabled
+    clsecure --no-network
+
+    # Run with Docker access (for docker-compose)
+    clsecure --allow-docker
+
+    # Run with basic user isolation only
+    clsecure --mode user
+
+    # Show config file and current settings
+    clsecure --config
+
+    # Show isolation details
+    clsecure --info
+
+SECURITY MODEL:
+    User isolation:      Dedicated Linux user per project
+    Namespace isolation: + Firejail sandbox (PID, mount, network, IPC)
+    Container isolation: + Full containerization (podman rootless)
+
+EOF
+    exit 0
+}
+
+
+
+check_requirements() {
+    local missing=()
+
+    command -v git &>/dev/null || missing+=("git")
+    command -v rsync &>/dev/null || missing+=("rsync")
+    command -v sudo &>/dev/null || missing+=("sudo")
+
+    if [ ${#missing[@]} -ne 0 ]; then
+        log_error "Missing required tools: ${missing[*]}"
+        exit 1
+    fi
+
+    if ! sudo -n true 2>/dev/null; then
+        log_warn "This script requires sudo privileges."
+        sudo true || { log_error "Failed to obtain sudo privileges."; exit 1; }
+    fi
+}
+
+# Note: Trap handler will be registered after lock acquisition (line ~273)
+# This ensures cleanup happens even on early exits (e.g., missing git repo, missing Claude CLI)
+# The trap must be registered AFTER acquire_lock succeeds, so the lock is released on exit
+
+# ------------------------------------------------------------------------------
+# Load configuration file (before parsing CLI args)
+# ------------------------------------------------------------------------------
+load_config
+
+# ------------------------------------------------------------------------------
+# Parse arguments (CLI overrides config file)
+# ------------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h)
+            show_help
+            ;;
+        --list|-l)
+            list_workers
+            ;;
+        --cleanup)
+            cleanup_workers
+            ;;
+        --cleanup-all)
+            cleanup_all_workers
+            ;;
+        --info)
+            show_isolation_info
+            ;;
+        --config)
+            show_config_info
+            ;;
+        --mode)
+            ISOLATION_MODE="$2"
+            if [[ ! "$ISOLATION_MODE" =~ ^(user|namespace|container)$ ]]; then
+                log_error "Invalid mode: $ISOLATION_MODE (must be user, namespace, or container)"
+                exit 1
+            fi
+            shift 2
+            ;;
+        --allow-network)
+            ALLOW_NETWORK=true
+            shift
+            ;;
+        --no-network)
+            ALLOW_NETWORK=false
+            shift
+            ;;
+        --allow-docker)
+            ALLOW_DOCKER=true
+            shift
+            ;;
+        --no-docker)
+            ALLOW_DOCKER=false
+            shift
+            ;;
+        --install-deps)
+            INSTALL_DEPS=true
+            shift
+            ;;
+        --shell)
+            SHELL_ONLY=true
+            shift
+            ;;
+        --skip-setup)
+            SKIP_SETUP=true
+            shift
+            ;;
+        --full-clone)
+            FULL_CLONE=true
+            shift
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            show_help
+            ;;
+    esac
+done
+
+# ------------------------------------------------------------------------------
+# Main script
+# ------------------------------------------------------------------------------
+echo ""
+echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  Claude Code Enhanced Secure Runner    ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+echo ""
+
+# Check requirements
+log_step "Checking requirements..."
+check_requirements
+check_isolation_requirements
+
+# Verify git repository
+log_step "Verifying git repository..."
+
+if [ ! -d ".git" ]; then
+    log_error "Not a git repository. Please run from a git project root."
+    exit 1
+fi
+
+if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+    log_warn "You have uncommitted changes in your working directory."
+    read -p "Continue anyway? (y/n): " continue_anyway
+    if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+        log_info "Aborted. Please commit or stash your changes first."
+        exit 0
+    fi
+fi
+
+ORIGINAL_BRANCH=$(git branch --show-current)
+if [ -z "$ORIGINAL_BRANCH" ]; then
+    ORIGINAL_BRANCH=$(git rev-parse --short HEAD)
+    log_warn "Detached HEAD state. Using commit: $ORIGINAL_BRANCH"
+fi
+export ORIGINAL_BRANCH  # Export so it's available in sync.sh functions
+
+# Warn if on a claude/* branch (temporary branch from previous session)
+if [[ "$ORIGINAL_BRANCH" =~ ^claude/ ]]; then
+    log_warn "You are currently on a temporary Claude branch: $ORIGINAL_BRANCH"
+    log_warn "This may prevent proper commit import from the worker session."
+    echo ""
+    echo "It's recommended to switch to your main branch first, for example:"
+    echo "  git checkout main    # or develop, master, etc."
+    echo ""
+    read -p "Continue anyway? (y/n): " CONTINUE_ANYWAY
+    if [[ ! "$CONTINUE_ANYWAY" =~ ^[Yy]$ ]]; then
+        log_info "Aborted. Please switch to your main branch first."
+        exit 0
+    fi
+fi
+
+log_info "Project: $PROJECT_NAME"
+log_info "Branch: $ORIGINAL_BRANCH"
+log_info "Worker user: $WORKER_USER"
+log_security "Isolation: $ISOLATION_MODE$([ "$ALLOW_NETWORK" = true ] && echo " (network enabled)" || echo " (network disabled)")$([ "$ALLOW_DOCKER" = true ] && echo " (docker enabled)")"
+
+# Check if already running
+log_step "Checking for existing session..."
+
+if ! acquire_lock; then
+    log_error "A session for '$PROJECT_NAME' is already running!"
+    log_info "Use 'clsecure --list' to see active sessions."
+    exit 1
+fi
+
+# Register trap handler early (after lock acquisition) to ensure cleanup on early exits
+# This is critical: if script exits early (e.g., missing git repo, missing Claude CLI),
+# the trap must be registered to release the lock
+trap cleanup_on_exit EXIT
+
+# Create worker user if needed
+log_step "Setting up worker user '$WORKER_USER'..."
+create_worker_user
+
+# Handle existing project files
+SKIP_COPY=false
+
+if [ -d "$WORKER_PROJECT" ]; then
+    echo ""
+    log_warn "Project files already exist for this user."
+    echo ""
+    echo "Options:"
+    echo "  1) Resume (keep existing files)"
+    echo "  2) Replace (fresh copy from source)"
+    echo "  3) Abort"
+    echo ""
+    read -p "Choose (1/2/3): " EXISTING_OPTION
+
+    case $EXISTING_OPTION in
+        1)
+            log_info "Resuming..."
+            SKIP_COPY=true
+            ;;
+        2)
+            log_info "Replacing..."
+            sudo rm -rf "$WORKER_PROJECT"
+            ;;
+        3)
+            log_info "Aborted."
+            release_lock
+            exit 0
+            ;;
+        *)
+            log_error "Invalid option."
+            release_lock
+            exit 1
+            ;;
+    esac
+fi
+
+# Clone repository and sync working directory
+if [ "$SKIP_COPY" = false ]; then
+    log_step "Setting up project files..."
+
+    # Check available disk space before cloning
+    REQUIRED_SPACE_MB=1000  # Estimate: 1GB minimum
+    if ! check_disk_space "$REQUIRED_SPACE_MB"; then
+        release_lock
+        exit 1
+    fi
+
+    if ! clone_repository; then
+        release_lock
+        exit 1
+    fi
+
+    sync_working_directory
+    copy_submodules
+
+    log_info "Project ready at $WORKER_PROJECT"
+fi
+
+setup_worker_home
+
+# Make sure project-local MCP config is portable across worker users
+sanitize_mcp_config
+
+# Copy configurations
+log_step "Setting up configurations..."
+
+if [ -d "$HOME/.claude" ]; then
+    log_info "Copying Claude config (excluding large files)..."
+    sudo mkdir -p "$WORKER_HOME/.claude"
+    # Use rsync to exclude large unnecessary files for faster copy
+    sudo rsync -a \
+        --exclude='debug' \
+        --exclude='file-history' \
+        --exclude='history.jsonl' \
+        --exclude='cache' \
+        --exclude='paste-cache' \
+        --exclude='plans' \
+        --exclude='__store.db' \
+        --exclude='*.db' \
+        --exclude='*.log' \
+        --exclude='venv' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='.git' \
+        --exclude='node_modules' \
+        "$HOME/.claude/" "$WORKER_HOME/.claude/" 2>/dev/null || true
+    sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude"
+    sanitize_worker_claude_home_paths
+fi
+
+setup_git_config
+
+# Setup shell environment
+log_step "Setting up shell environment..."
+
+WORKER_BASHRC="$WORKER_HOME/.bashrc"
+
+if ! grep -q "NPM_CONFIG_PREFIX" "$WORKER_BASHRC" 2>/dev/null; then
+    sudo tee "$WORKER_BASHRC" > /dev/null << 'BASHRCEOF'
+# Linuxbrew setup
+if [ -f /home/linuxbrew/.linuxbrew/bin/brew ]; then
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+fi
+
+# NPM global packages
+export NPM_CONFIG_PREFIX="$HOME/.npm-global"
+export PATH="$HOME/.npm-global/bin:$PATH"
+BASHRCEOF
+    sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_BASHRC"
+    log_info "Shell environment configured."
+else
+    log_info "Shell environment already configured."
+fi
+
+sudo -u "$WORKER_USER" mkdir -p "$WORKER_HOME/.npm-global"
+
+# Warn early if MCP runtime is missing
+check_worker_mcp_runtime
+
+# Verify Claude CLI
+log_step "Checking Claude CLI..."
+
+if [ -x "/home/linuxbrew/.linuxbrew/bin/claude" ]; then
+    log_info "Claude CLI found."
+    CLAUDE_BIN="/home/linuxbrew/.linuxbrew/bin/claude"
+    export CLAUDE_BIN  # Export so it's available in subshells (isolation.sh functions)
+else
+    log_error "Claude CLI not found at /home/linuxbrew/.linuxbrew/bin/claude"
+    log_info "Install with: brew install claude-code"
+    release_lock
+    exit 1
+fi
+
+# Install task-master-ai (with npm cache copy and retry)
+install_task_master 2
+
+# Run setup script if configured (optional - failures should not terminate script)
+if [ "$SKIP_SETUP" = true ]; then
+    log_info "Skipping setup script (--skip-setup)"
+else
+    run_setup_script || {
+        log_warn "Setup script execution failed, but continuing..."
+    }
+fi
+
+# Install dependencies if requested
+if [ "$INSTALL_DEPS" = true ]; then
+    install_project_dependencies
+fi
+
+
+# ------------------------------------------------------------------------------
+# Start session with selected isolation
+# ------------------------------------------------------------------------------
+echo ""
+if [ "$SHELL_ONLY" = true ]; then
+    echo -e "${CYAN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║     Starting Debug Shell Session       ║${NC}"
+    echo -e "${CYAN}╚════════════════════════════════════════╝${NC}"
+else
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║     Starting Claude Code Session       ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+fi
+echo ""
+log_info "User: $WORKER_USER"
+log_info "Project: $WORKER_PROJECT"
+log_security "Isolation: $ISOLATION_MODE"
+echo ""
+
+# Add --continue flag if resuming an existing session
+CONTINUE_FLAG=""
+if [ "$SKIP_COPY" = true ]; then
+    CONTINUE_FLAG="--continue"
+    log_info "Resuming previous Claude session..."
+fi
+
+if [ "$SHELL_ONLY" = true ]; then
+    echo -e "${YELLOW}Type 'exit' to end shell session.${NC}"
+else
+    echo -e "${YELLOW}Type /exit or press Ctrl+C to end session.${NC}"
+fi
+echo ""
+
+set +e
+
+if [ "$SHELL_ONLY" = true ]; then
+    # Shell-only mode for debugging
+    case $ISOLATION_MODE in
+        user)
+            start_user_shell
+            ;;
+        namespace)
+            start_namespace_shell
+            ;;
+        container)
+            log_error "Shell mode not implemented for container isolation"
+            release_lock
+            exit 1
+            ;;
+    esac
+else
+    # Normal Claude session
+    case $ISOLATION_MODE in
+        user)
+            start_user_session "$CONTINUE_FLAG"
+            ;;
+        namespace)
+            start_namespace_session "$CONTINUE_FLAG"
+            ;;
+        container)
+            if ! start_container_session "$CONTINUE_FLAG"; then
+                release_lock
+                exit 1
+            fi
+            ;;
+    esac
+fi
+
+CLAUDE_EXIT_CODE=$?
+# Keep set +e for the change detection phase to avoid premature exits
+set +e
+
+# ------------------------------------------------------------------------------
+# Handle changes (Commits + Uncommitted)
+# ------------------------------------------------------------------------------
+echo ""
+echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║     Session Ended                      ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+echo ""
+
+# Detect changes (sets WORKER_COMMITS, NUM_COMMITS, WORKER_CHANGES)
+set +e  # Temporarily disable strict error handling for change detection
+detect_worker_changes
+set -e  # Re-enable strict error handling after safely gathering change information
+
+if show_sync_summary; then
+    # No changes detected
+    echo ""
+    read -p "Remove worker user '$WORKER_USER'? (y/n): " cleanup
+    if [[ "$cleanup" =~ ^[Yy]$ ]]; then
+        sudo userdel -r "$WORKER_USER" 2>/dev/null || true
+        log_info "User removed."
+    fi
+    release_lock
+    exit 0
+fi
+
+echo "Options:"
+echo "  1) Create branch and import ALL work (commits + changes)"
+echo "  2) Discard changes and remove user"
+echo "  3) Keep for later (resume with clsecure)"
+echo ""
+read -p "Choose (1/2/3): " OPTION
+
+case $OPTION in
+    1)
+        if ! create_branch_and_import; then
+            exit 1
+        fi
+        ;;
+    2)
+        log_warn "Removing user and all changes..."
+        sudo userdel -r "$WORKER_USER" 2>/dev/null || true
+        log_info "Done."
+        ;;
+    3)
+        log_info "Keeping user '$WORKER_USER' for later."
+        echo "Resume by running 'clsecure' from the same project."
+        ;;
+esac
+
+release_lock
+echo ""
+log_info "Done!"
