@@ -23,8 +23,8 @@ list_workers() {
         exit 0
     fi
 
-    printf "%-30s %-10s %-15s %s\n" "USER" "STATUS" "SIZE" "PROJECT PATH"
-    printf "%-30s %-10s %-15s %s\n" "----" "------" "----" "------------"
+    printf "%-30s %-10s %-15s %-15s %s\n" "USER" "STATUS" "SESSION" "SIZE" "PROJECT PATH"
+    printf "%-30s %-10s %-15s %-15s %s\n" "----" "------" "-------" "----" "------------"
 
     for user in $workers; do
         local home_dir="/home/$user"
@@ -40,17 +40,24 @@ list_workers() {
             fi
         fi
 
+        local session="-"
+        if [ -f "$home_dir/.clsecure/session_name" ]; then
+            session=$(sudo cat "$home_dir/.clsecure/session_name" 2>/dev/null || echo "-")
+        fi
+
         local size="N/A"
         if [ -d "$home_dir" ]; then
             size=$(sudo du -sh "$home_dir" 2>/dev/null | cut -f1 || echo "N/A")
         fi
 
         local project_path="-"
-        if [ -d "$home_dir/project/.git" ]; then
+        if [ -f "$home_dir/.clsecure/project_path" ]; then
+            project_path=$(sudo cat "$home_dir/.clsecure/project_path" 2>/dev/null || echo "-")
+        elif [ -d "$home_dir/project/.git" ]; then
             project_path=$(sudo -u "$user" git -C "$home_dir/project" remote get-url origin 2>/dev/null | sed 's|.*/||' | sed 's|\.git$||' || echo "-")
         fi
 
-        printf "%-30s %-10b %-15s %s\n" "$user" "$status" "$size" "$project_path"
+        printf "%-30s %-10b %-15s %-15s %s\n" "$user" "$status" "$session" "$size" "$project_path"
     done
 
     echo ""
@@ -75,8 +82,10 @@ cleanup_workers() {
     echo "Found worker users:"
     for i in "${!worker_array[@]}"; do
         local user="${worker_array[$i]}"
+        local home_dir="/home/$user"
         local lock_file="$LOCK_DIR/${user}.lock"
         local status=""
+        local session_info=""
 
         if [ -f "$lock_file" ]; then
             local pid=$(cat "$lock_file" 2>/dev/null || echo "")
@@ -85,7 +94,12 @@ cleanup_workers() {
             fi
         fi
 
-        echo -e "  $((i+1))) ${user}${status}"
+        if [ -f "$home_dir/.clsecure/session_name" ]; then
+            local session=$(sudo cat "$home_dir/.clsecure/session_name" 2>/dev/null || echo "")
+            [ -n "$session" ] && session_info=" [session: $session]"
+        fi
+
+        echo -e "  $((i+1))) ${user}${session_info}${status}"
     done
     echo "  q) Quit"
     echo ""
@@ -186,6 +200,14 @@ create_worker_user() {
     else
         log_info "User already exists."
     fi
+
+    # Store session metadata
+    sudo mkdir -p "$WORKER_HOME/.clsecure"
+    echo "$CURRENT_DIR" | sudo tee "$WORKER_HOME/.clsecure/project_path" > /dev/null
+    if [ -n "${SESSION_NAME:-}" ]; then
+        echo "$SESSION_NAME" | sudo tee "$WORKER_HOME/.clsecure/session_name" > /dev/null
+    fi
+    sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.clsecure"
 
     # Add to docker group if docker exists and docker access is allowed
     if command -v docker &>/dev/null && [ "$ALLOW_DOCKER" = true ]; then

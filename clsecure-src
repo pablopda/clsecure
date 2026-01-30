@@ -59,6 +59,7 @@ OPTIONS:
     --shell             Start shell instead of Claude (for debugging)
     --skip-setup        Skip setup script execution
     --full-clone        Clone full git history (slower, default is shallow)
+    --session, -s NAME  Run a named session (multiple environments per project)
 
 ISOLATION MODES:
     user                Basic user isolation (original clsecure behavior)
@@ -107,6 +108,10 @@ EXAMPLES:
 
     # Show isolation details
     clsecure --info
+
+    # Run multiple sessions for the same project
+    clsecure --session auth
+    clsecure --session payments
 
 SECURITY MODEL:
     User isolation:      Dedicated Linux user per project
@@ -209,12 +214,24 @@ while [[ $# -gt 0 ]]; do
             FULL_CLONE=true
             shift
             ;;
+        --session|-s)
+            SESSION_NAME="$2"
+            shift 2
+            ;;
         *)
             log_error "Unknown option: $1"
             show_help
             ;;
     esac
 done
+
+# Recompute worker variables if a session name was provided
+if [ -n "$SESSION_NAME" ]; then
+    if ! recompute_worker_vars; then
+        log_error "Invalid session name: '$SESSION_NAME' (sanitizes to empty)"
+        exit 1
+    fi
+fi
 
 # ------------------------------------------------------------------------------
 # Main script
@@ -271,6 +288,7 @@ fi
 
 log_info "Project: $PROJECT_NAME"
 log_info "Branch: $ORIGINAL_BRANCH"
+[ -n "$SESSION_NAME" ] && log_info "Session: $SESSION_NAME"
 log_info "Worker user: $WORKER_USER"
 log_security "Isolation: $ISOLATION_MODE$([ "$ALLOW_NETWORK" = true ] && echo " (network enabled)" || echo " (network disabled)")$([ "$ALLOW_DOCKER" = true ] && echo " (docker enabled)")"
 
@@ -278,7 +296,11 @@ log_security "Isolation: $ISOLATION_MODE$([ "$ALLOW_NETWORK" = true ] && echo " 
 log_step "Checking for existing session..."
 
 if ! acquire_lock; then
-    log_error "A session for '$PROJECT_NAME' is already running!"
+    if [ -n "$SESSION_NAME" ]; then
+        log_error "A session for '$PROJECT_NAME' (session: $SESSION_NAME) is already running!"
+    else
+        log_error "A session for '$PROJECT_NAME' is already running!"
+    fi
     log_info "Use 'clsecure --list' to see active sessions."
     exit 1
 fi

@@ -74,6 +74,8 @@ init_clsecure_vars() {
     SHELL_ONLY=false  # If true, drop into shell instead of running Claude
     SKIP_SETUP=false  # If true, skip setup script execution
     FULL_CLONE=false  # If true, clone full git history (slower)
+    SESSION_NAME=""   # Session name for multiple environments per project
+    SESSION_NAME_SANITIZED=""  # Sanitized session name
 
     # Config file locations (XDG standard, then fallback)
     CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
@@ -89,11 +91,51 @@ init_clsecure_vars() {
 
     # Export variables that modules need
     export WORKER_USER WORKER_HOME WORKER_PROJECT
-    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE
+    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED
     export LOCK_FILE LOCK_DIR
     export CONFIG_FILE CONFIG_FILE_ALT
     export RED GREEN YELLOW BLUE CYAN NC
     export WORKER_PREFIX CURRENT_DIR PROJECT_NAME PROJECT_NAME_SANITIZED PROJECT_HASH SAFE_PROJECT_NAME
+}
+
+# Recompute worker-related variables after SESSION_NAME is set via CLI
+# Called after CLI parsing when --session is used. No-op when SESSION_NAME is empty.
+# Returns 1 if session name sanitizes to empty.
+recompute_worker_vars() {
+    # Sanitize session name: lowercase, replace non-alnum with dash, truncate to 20 chars
+    SESSION_NAME_SANITIZED=$(echo "$SESSION_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')
+    SESSION_NAME_SANITIZED="${SESSION_NAME_SANITIZED:0:20}"
+
+    if [ -z "$SESSION_NAME_SANITIZED" ]; then
+        return 1
+    fi
+
+    # Recompute hash with session name appended
+    local hash_input="$CURRENT_DIR:$SESSION_NAME"
+    if command -v sha256sum &>/dev/null; then
+        PROJECT_HASH=$(echo -n "$hash_input" | sha256sum | cut -c1-6)
+    elif command -v shasum &>/dev/null; then
+        PROJECT_HASH=$(echo -n "$hash_input" | shasum -a 256 | cut -c1-6)
+    else
+        if command -v md5sum &>/dev/null; then
+            PROJECT_HASH=$(echo -n "$hash_input" | md5sum | cut -c1-6)
+        else
+            PROJECT_HASH=$(echo -n "$hash_input" | tr -cd 'a-z0-9' | cut -c1-6)
+            [ -z "$PROJECT_HASH" ] && PROJECT_HASH="000000"
+        fi
+    fi
+
+    # Recompute derived variables
+    SAFE_PROJECT_NAME="${PROJECT_NAME_SANITIZED:0:10}-${PROJECT_HASH}"
+    WORKER_USER="${WORKER_PREFIX}-${SAFE_PROJECT_NAME}"
+    WORKER_HOME="/home/$WORKER_USER"
+    WORKER_PROJECT="$WORKER_HOME/project"
+    LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
+
+    # Re-export changed variables
+    export PROJECT_HASH SAFE_PROJECT_NAME WORKER_USER WORKER_HOME WORKER_PROJECT LOCK_FILE SESSION_NAME SESSION_NAME_SANITIZED
+
+    return 0
 }
 
 
@@ -324,8 +366,8 @@ list_workers() {
         exit 0
     fi
 
-    printf "%-30s %-10s %-15s %s\n" "USER" "STATUS" "SIZE" "PROJECT PATH"
-    printf "%-30s %-10s %-15s %s\n" "----" "------" "----" "------------"
+    printf "%-30s %-10s %-15s %-15s %s\n" "USER" "STATUS" "SESSION" "SIZE" "PROJECT PATH"
+    printf "%-30s %-10s %-15s %-15s %s\n" "----" "------" "-------" "----" "------------"
 
     for user in $workers; do
         local home_dir="/home/$user"
@@ -341,17 +383,24 @@ list_workers() {
             fi
         fi
 
+        local session="-"
+        if [ -f "$home_dir/.clsecure/session_name" ]; then
+            session=$(sudo cat "$home_dir/.clsecure/session_name" 2>/dev/null || echo "-")
+        fi
+
         local size="N/A"
         if [ -d "$home_dir" ]; then
             size=$(sudo du -sh "$home_dir" 2>/dev/null | cut -f1 || echo "N/A")
         fi
 
         local project_path="-"
-        if [ -d "$home_dir/project/.git" ]; then
+        if [ -f "$home_dir/.clsecure/project_path" ]; then
+            project_path=$(sudo cat "$home_dir/.clsecure/project_path" 2>/dev/null || echo "-")
+        elif [ -d "$home_dir/project/.git" ]; then
             project_path=$(sudo -u "$user" git -C "$home_dir/project" remote get-url origin 2>/dev/null | sed 's|.*/||' | sed 's|\.git$||' || echo "-")
         fi
 
-        printf "%-30s %-10b %-15s %s\n" "$user" "$status" "$size" "$project_path"
+        printf "%-30s %-10b %-15s %-15s %s\n" "$user" "$status" "$session" "$size" "$project_path"
     done
 
     echo ""
@@ -376,8 +425,10 @@ cleanup_workers() {
     echo "Found worker users:"
     for i in "${!worker_array[@]}"; do
         local user="${worker_array[$i]}"
+        local home_dir="/home/$user"
         local lock_file="$LOCK_DIR/${user}.lock"
         local status=""
+        local session_info=""
 
         if [ -f "$lock_file" ]; then
             local pid=$(cat "$lock_file" 2>/dev/null || echo "")
@@ -386,7 +437,12 @@ cleanup_workers() {
             fi
         fi
 
-        echo -e "  $((i+1))) ${user}${status}"
+        if [ -f "$home_dir/.clsecure/session_name" ]; then
+            local session=$(sudo cat "$home_dir/.clsecure/session_name" 2>/dev/null || echo "")
+            [ -n "$session" ] && session_info=" [session: $session]"
+        fi
+
+        echo -e "  $((i+1))) ${user}${session_info}${status}"
     done
     echo "  q) Quit"
     echo ""
@@ -487,6 +543,14 @@ create_worker_user() {
     else
         log_info "User already exists."
     fi
+
+    # Store session metadata
+    sudo mkdir -p "$WORKER_HOME/.clsecure"
+    echo "$CURRENT_DIR" | sudo tee "$WORKER_HOME/.clsecure/project_path" > /dev/null
+    if [ -n "${SESSION_NAME:-}" ]; then
+        echo "$SESSION_NAME" | sudo tee "$WORKER_HOME/.clsecure/session_name" > /dev/null
+    fi
+    sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.clsecure"
 
     # Add to docker group if docker exists and docker access is allowed
     if command -v docker &>/dev/null && [ "$ALLOW_DOCKER" = true ]; then
@@ -1390,7 +1454,12 @@ import_uncommitted_changes() {
 # Create branch and import all work (commits + changes)
 create_branch_and_import() {
     local timestamp=$(date +%Y%m%d-%H%M%S)
-    local default_branch="claude/${SAFE_PROJECT_NAME}-${timestamp}"
+    local default_branch
+    if [ -n "${SESSION_NAME_SANITIZED:-}" ]; then
+        default_branch="claude/${SAFE_PROJECT_NAME}-${SESSION_NAME_SANITIZED}-${timestamp}"
+    else
+        default_branch="claude/${SAFE_PROJECT_NAME}-${timestamp}"
+    fi
     
     read -p "Branch name [$default_branch]: " branch_name
     branch_name=${branch_name:-$default_branch}
@@ -1486,6 +1555,7 @@ OPTIONS:
     --shell             Start shell instead of Claude (for debugging)
     --skip-setup        Skip setup script execution
     --full-clone        Clone full git history (slower, default is shallow)
+    --session, -s NAME  Run a named session (multiple environments per project)
 
 ISOLATION MODES:
     user                Basic user isolation (original clsecure behavior)
@@ -1534,6 +1604,10 @@ EXAMPLES:
 
     # Show isolation details
     clsecure --info
+
+    # Run multiple sessions for the same project
+    clsecure --session auth
+    clsecure --session payments
 
 SECURITY MODEL:
     User isolation:      Dedicated Linux user per project
@@ -1636,12 +1710,24 @@ while [[ $# -gt 0 ]]; do
             FULL_CLONE=true
             shift
             ;;
+        --session|-s)
+            SESSION_NAME="$2"
+            shift 2
+            ;;
         *)
             log_error "Unknown option: $1"
             show_help
             ;;
     esac
 done
+
+# Recompute worker variables if a session name was provided
+if [ -n "$SESSION_NAME" ]; then
+    if ! recompute_worker_vars; then
+        log_error "Invalid session name: '$SESSION_NAME' (sanitizes to empty)"
+        exit 1
+    fi
+fi
 
 # ------------------------------------------------------------------------------
 # Main script
@@ -1698,6 +1784,7 @@ fi
 
 log_info "Project: $PROJECT_NAME"
 log_info "Branch: $ORIGINAL_BRANCH"
+[ -n "$SESSION_NAME" ] && log_info "Session: $SESSION_NAME"
 log_info "Worker user: $WORKER_USER"
 log_security "Isolation: $ISOLATION_MODE$([ "$ALLOW_NETWORK" = true ] && echo " (network enabled)" || echo " (network disabled)")$([ "$ALLOW_DOCKER" = true ] && echo " (docker enabled)")"
 
@@ -1705,7 +1792,11 @@ log_security "Isolation: $ISOLATION_MODE$([ "$ALLOW_NETWORK" = true ] && echo " 
 log_step "Checking for existing session..."
 
 if ! acquire_lock; then
-    log_error "A session for '$PROJECT_NAME' is already running!"
+    if [ -n "$SESSION_NAME" ]; then
+        log_error "A session for '$PROJECT_NAME' (session: $SESSION_NAME) is already running!"
+    else
+        log_error "A session for '$PROJECT_NAME' is already running!"
+    fi
     log_info "Use 'clsecure --list' to see active sessions."
     exit 1
 fi

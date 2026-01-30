@@ -164,7 +164,12 @@ import_uncommitted_changes() {
 # Create branch and import all work (commits + changes)
 create_branch_and_import() {
     local timestamp=$(date +%Y%m%d-%H%M%S)
-    local default_branch="claude/${SAFE_PROJECT_NAME}-${timestamp}"
+    local default_branch
+    if [ -n "${SESSION_NAME_SANITIZED:-}" ]; then
+        default_branch="claude/${SAFE_PROJECT_NAME}-${SESSION_NAME_SANITIZED}-${timestamp}"
+    else
+        default_branch="claude/${SAFE_PROJECT_NAME}-${timestamp}"
+    fi
     
     read -p "Branch name [$default_branch]: " branch_name
     branch_name=${branch_name:-$default_branch}

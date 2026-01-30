@@ -9,6 +9,9 @@ if ! command -v bats &>/dev/null; then
     exit 0
 fi
 
+# Resolve the project lib directory (before any cd to temp dirs)
+CLSECURE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
+
 # Test setup: Create temporary directory
 setup_test() {
     TEST_DIR=$(mktemp -d)
@@ -26,7 +29,7 @@ teardown_test() {
 # Source a module for testing (with mocked dependencies)
 source_module() {
     local module="$1"
-    local lib_dir="${2:-../lib}"
+    local lib_dir="${2:-$CLSECURE_LIB_DIR}"
     
     # Create a temporary directory for the module
     local temp_lib=$(mktemp -d)

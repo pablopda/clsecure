@@ -58,3 +58,11 @@ config:
 # Show isolation info
 info:
     ./clsecure --info
+
+# Run a named session
+session name:
+    ./clsecure --session {{name}}
+
+# Run shell mode with a named session
+shell-session name:
+    ./clsecure --shell --skip-setup --session {{name}}

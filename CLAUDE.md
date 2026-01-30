@@ -133,6 +133,13 @@ clsecure --cleanup
 
 # Show isolation info
 clsecure --info
+
+# Run multiple sessions for the same project
+clsecure --session auth       # separate worker for auth work
+clsecure --session payments   # separate worker for payments work
+
+# Debug shell with a named session
+clsecure --shell --skip-setup --session mytest
 ```
 
 ## Important Notes
