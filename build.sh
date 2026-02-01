@@ -52,7 +52,7 @@ SEPARATOR
 
 # Step 3: Concatenate modules in dependency order
 # Remove shebangs and add module headers
-for module in vars.sh logging.sh lock.sh config.sh worker.sh git.sh sanitize.sh deps.sh isolation.sh sync.sh; do
+for module in vars.sh logging.sh lock.sh config.sh worker.sh git.sh sanitize.sh deps.sh isolation.sh sync.sh cleanup.sh; do
     if [ -f "$LIB_DIR/$module" ]; then
         echo "" >> "$OUTPUT_FILE"
         echo "# --- Module: $module ---" >> "$OUTPUT_FILE"

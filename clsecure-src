@@ -36,6 +36,9 @@ source "${LIB_DIR}/isolation.sh"
 # Level 5: Depends on logging + git + worker + vars
 source "${LIB_DIR}/sync.sh"
 
+# Level 6: Depends on logging + worker + vars
+source "${LIB_DIR}/cleanup.sh"
+
 
 show_help() {
     cat << EOF
@@ -556,6 +559,7 @@ if show_sync_summary; then
     echo ""
     read -p "Remove worker user '$WORKER_USER'? (y/n): " cleanup
     if [[ "$cleanup" =~ ^[Yy]$ ]]; then
+        cleanup_session "stop"
         sudo userdel -r "$WORKER_USER" 2>/dev/null || true
         log_info "User removed."
     fi
@@ -575,8 +579,16 @@ case $OPTION in
         if ! create_branch_and_import; then
             exit 1
         fi
+        cleanup_session "stop"
         ;;
     2)
+        cleanup_level="stop"
+        if [ "$ALLOW_DOCKER" = true ]; then
+            echo ""
+            read -p "Also remove Docker data volumes? (y/n): " purge_volumes
+            [[ "$purge_volumes" =~ ^[Yy]$ ]] && cleanup_level="purge"
+        fi
+        cleanup_session "$cleanup_level"
         log_warn "Removing user and all changes..."
         sudo userdel -r "$WORKER_USER" 2>/dev/null || true
         log_info "Done."

@@ -126,6 +126,9 @@ cleanup_workers() {
         read -p "Remove user '$user' and all their files? (y/n): " confirm
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             log_info "Removing user '$user'..."
+            # Run session cleanup before removing user
+            WORKER_USER="$user" WORKER_HOME="/home/$user" WORKER_PROJECT="/home/$user/project" \
+                cleanup_session "stop"
             sudo userdel -r "$user" 2>/dev/null || sudo userdel "$user" 2>/dev/null || true
             sudo rm -rf "/home/$user" 2>/dev/null || true
             sudo rm -f "$lock_file" 2>/dev/null || true
@@ -174,6 +177,9 @@ cleanup_all_workers() {
             fi
 
             log_info "Removing '$user'..."
+            # Run session cleanup before removing user
+            WORKER_USER="$user" WORKER_HOME="/home/$user" WORKER_PROJECT="/home/$user/project" \
+                cleanup_session "purge"
             sudo userdel -r "$user" 2>/dev/null || sudo userdel "$user" 2>/dev/null || true
             sudo rm -rf "/home/$user" 2>/dev/null || true
             sudo rm -f "$lock_file" 2>/dev/null || true

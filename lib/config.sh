@@ -65,6 +65,16 @@ load_config() {
                     SETUP_SCRIPT="$value"
                 fi
                 ;;
+            cleanup_hook_timeout|CLEANUP_HOOK_TIMEOUT)
+                if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 5 ] && [ "$value" -le 300 ]; then
+                    CLEANUP_HOOK_TIMEOUT="$value"
+                fi
+                ;;
+            skip_docker_autodetect|SKIP_DOCKER_AUTODETECT)
+                if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
+                    [[ "$value" =~ ^(true|yes|1)$ ]] && SKIP_DOCKER_AUTODETECT=true || SKIP_DOCKER_AUTODETECT=false
+                fi
+                ;;
         esac
     done < "$config_file"
 }

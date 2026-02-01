@@ -61,6 +61,8 @@ init_clsecure_vars() {
     FULL_CLONE=false  # If true, clone full git history (slower)
     SESSION_NAME=""   # Session name for multiple environments per project
     SESSION_NAME_SANITIZED=""  # Sanitized session name
+    CLEANUP_HOOK_TIMEOUT=30       # Timeout for project cleanup hooks (seconds)
+    SKIP_DOCKER_AUTODETECT=false  # Skip docker auto-detection during cleanup
 
     # Config file locations (XDG standard, then fallback)
     CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
@@ -76,7 +78,7 @@ init_clsecure_vars() {
 
     # Export variables that modules need
     export WORKER_USER WORKER_HOME WORKER_PROJECT
-    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED
+    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT
     export LOCK_FILE LOCK_DIR
     export CONFIG_FILE CONFIG_FILE_ALT
     export RED GREEN YELLOW BLUE CYAN NC
