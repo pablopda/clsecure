@@ -131,27 +131,35 @@ show_isolation_info() {
     exit 0
 }
 
+# Build env args array for session environment variables
+# Sets CLSECURE_SESSION and GH_TOKEN when available
+_build_session_env() {
+    SESSION_ENV_ARGS=()
+    if [ -n "${SESSION_NAME:-}" ]; then
+        SESSION_ENV_ARGS+=(CLSECURE_SESSION="$SESSION_NAME")
+    fi
+
+    local gh_token_val="${GH_TOKEN:-}"
+    if [ -z "$gh_token_val" ] && command -v gh &>/dev/null; then
+        gh_token_val=$(gh auth token 2>/dev/null || echo "")
+    fi
+    if [ -n "$gh_token_val" ]; then
+        SESSION_ENV_ARGS+=(GH_TOKEN="$gh_token_val")
+    fi
+}
+
 # Start user isolation session
 start_user_session() {
     local continue_flag="$1"
-    # Original behavior: just run as worker user
-    # Pass GH_TOKEN if available to the session too
-    local gh_token_val="${GH_TOKEN:-}"
-    if [ -z "$gh_token_val" ] && command -v gh &>/dev/null; then
-         gh_token_val=$(gh auth token 2>/dev/null || echo "")
-    fi
-    
-    # Use env command to safely pass environment variables (avoids command injection)
-    if [ -n "$gh_token_val" ]; then
-        sudo -u "$WORKER_USER" env GH_TOKEN="$gh_token_val" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
-    else
-        sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
-    fi
+    _build_session_env
+    sudo -u "$WORKER_USER" env "${SESSION_ENV_ARGS[@]}" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
 }
 
 # Start namespace isolation session (firejail)
 start_namespace_session() {
     local continue_flag="$1"
+    _build_session_env
+
     # Enhanced: Add firejail namespace isolation
     local network_flag=""
     [ "$ALLOW_NETWORK" = false ] && network_flag="--net=none"
@@ -164,7 +172,7 @@ start_namespace_session() {
         docker_flags="--noblacklist=/var/run/docker.sock --noblacklist=/run/docker.sock"
     fi
 
-    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp -- $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
+    sudo -u "$WORKER_USER" env "${SESSION_ENV_ARGS[@]}" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown -- $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
 }
 
 # Start container isolation session (podman)
@@ -178,12 +186,15 @@ start_container_session() {
 
 # Start shell session (user isolation, no Claude)
 start_user_shell() {
+    _build_session_env
     log_info "Starting shell as $WORKER_USER..."
-    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && exec bash -l"
+    sudo -u "$WORKER_USER" env "${SESSION_ENV_ARGS[@]}" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && exec bash -l"
 }
 
 # Start shell session (namespace isolation, no Claude)
 start_namespace_shell() {
+    _build_session_env
+
     local network_flag=""
     [ "$ALLOW_NETWORK" = false ] && network_flag="--net=none"
 
@@ -193,5 +204,5 @@ start_namespace_shell() {
     fi
 
     log_info "Starting shell in firejail namespace..."
-    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp -- bash -l"
+    sudo -u "$WORKER_USER" env "${SESSION_ENV_ARGS[@]}" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown -- bash -l"
 }
