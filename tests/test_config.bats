@@ -60,3 +60,49 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"Configuration"* ]]
 }
+
+@test "load_config reads cleanup_hook_timeout" {
+    cat >> "$HOME/.config/clsecure/config" << EOF
+cleanup_hook_timeout = 60
+EOF
+    init_clsecure_vars
+    load_config
+    [ "$CLEANUP_HOOK_TIMEOUT" = "60" ]
+}
+
+@test "load_config rejects cleanup_hook_timeout below minimum" {
+    cat > "$HOME/.config/clsecure/config" << EOF
+cleanup_hook_timeout = 3
+EOF
+    init_clsecure_vars
+    load_config
+    # Should keep default (3 < 5 minimum)
+    [ "$CLEANUP_HOOK_TIMEOUT" = "30" ]
+}
+
+@test "load_config rejects cleanup_hook_timeout above maximum" {
+    cat > "$HOME/.config/clsecure/config" << EOF
+cleanup_hook_timeout = 500
+EOF
+    init_clsecure_vars
+    load_config
+    # Should keep default (500 > 300 maximum)
+    [ "$CLEANUP_HOOK_TIMEOUT" = "30" ]
+}
+
+@test "load_config reads skip_docker_autodetect" {
+    cat >> "$HOME/.config/clsecure/config" << EOF
+skip_docker_autodetect = true
+EOF
+    init_clsecure_vars
+    load_config
+    [ "$SKIP_DOCKER_AUTODETECT" = "true" ]
+}
+
+@test "load_config defaults cleanup variables when not in config" {
+    # Config file exists but doesn't have cleanup keys
+    init_clsecure_vars
+    load_config
+    [ "$CLEANUP_HOOK_TIMEOUT" = "30" ]
+    [ "$SKIP_DOCKER_AUTODETECT" = "false" ]
+}
