@@ -70,21 +70,14 @@ ISOLATION MODES:
     container           User + Container (podman rootless) - MAXIMUM SECURITY
 
 CONFIGURATION FILE:
-    Settings can be configured in ~/.config/clsecure/config or ~/.clsecurerc
-    Command-line arguments override config file settings.
+    Project:  .clsecure/config (per-project, shareable via git)
+    User:     ~/.config/clsecure/config or ~/.clsecurerc
 
-    Example config file:
-        # Default isolation mode
-        mode = namespace
+    Precedence: CLI args > User config > Project config > Defaults
 
-        # Allow network access (true/false)
-        network = true
-
-        # Allow Docker access (true/false)
-        docker = false
-
-        # Install project dependencies (true/false)
-        install_dependencies = false
+    Security-sensitive settings (docker, network, setup_script,
+    install_dependencies) can only be set via user config or CLI flags.
+    Project config can set: mode, cleanup_hook_timeout, skip_docker_autodetect.
 
 REQUIREMENTS:
     - git (must be run from a git repository)

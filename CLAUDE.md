@@ -143,6 +143,12 @@ clsecure --session payments   # separate worker for payments work
 clsecure --shell --skip-setup --session mytest
 ```
 
+### Project-Level Config
+
+Projects can provide a `.clsecure/config` file with safe settings (mode, cleanup_hook_timeout, skip_docker_autodetect). Security-sensitive settings (docker, network, setup_script, install_dependencies) are only accepted from user config (`~/.config/clsecure/config`) or CLI flags.
+
+Precedence: CLI flags > User config > Project config > Defaults
+
 ### Cleanup Hooks
 
 Projects can provide a `.clsecure/on-cleanup` executable that runs when a session ends.

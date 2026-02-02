@@ -59,6 +59,7 @@ source_module() {
         export SETUP_SCRIPT=""
         export CONFIG_FILE="$HOME/.config/clsecure/config"
         export CONFIG_FILE_ALT="$HOME/.clsecurerc"
+        export PROJECT_CONFIG_FILE="$CURRENT_DIR/.clsecure/config"
         export RED='\033[0;31m'
         export GREEN='\033[0;32m'
         export YELLOW='\033[1;33m'

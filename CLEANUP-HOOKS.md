@@ -122,7 +122,7 @@ This fallback covers the common case without requiring a hook. To disable it, se
 
 ## Configuration
 
-These settings go in `~/.config/clsecure/config` or `~/.clsecurerc`:
+These settings can go in your project config (`.clsecure/config`) or user config (`~/.config/clsecure/config` or `~/.clsecurerc`):
 
 ```ini
 # Timeout for cleanup hooks in seconds (5-300, default: 30)
@@ -131,6 +131,8 @@ cleanup_hook_timeout = 30
 # Skip Docker auto-detection during cleanup (default: false)
 skip_docker_autodetect = false
 ```
+
+Both `cleanup_hook_timeout` and `skip_docker_autodetect` are project-safe settings, so they can be committed to version control in `.clsecure/config`.
 
 ## Recipes
 

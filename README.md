@@ -69,6 +69,9 @@ clsecure
 # With network access (for git push, npm install)
 clsecure --allow-network
 
+# With Docker access (for projects using docker compose)
+clsecure --allow-docker
+
 # Maximum security (container isolation)
 clsecure --mode container
 
@@ -84,9 +87,39 @@ clsecure --cleanup
 
 ## Configuration & Custom Setup
 
-You can configure persistent settings and custom setup scripts in `~/.config/clsecure/config`.
+clsecure supports two configuration levels:
 
-### Configuration File
+| Level | Location | Scope |
+|-------|----------|-------|
+| **Project** | `.clsecure/config` | Per-project, shareable via git |
+| **User** | `~/.config/clsecure/config` or `~/.clsecurerc` | Per-user, all projects |
+
+**Precedence:** CLI flags > User config > Project config > Defaults
+
+### Project Config (`.clsecure/config`)
+
+For security, only safe settings are accepted from project config. Security-sensitive settings are warned and ignored.
+
+| Setting | Project-safe? | Notes |
+|---------|:---:|-------|
+| `mode` | Yes | Isolation mode (user/namespace/container) |
+| `cleanup_hook_timeout` | Yes | Bounded 5-300s |
+| `skip_docker_autodetect` | Yes | Only affects cleanup fallback |
+| `docker` / `network` | **No** | Use CLI flags or user config |
+| `setup_script` | **No** | Use user config |
+| `install_dependencies` | **No** | Use CLI flags or user config |
+
+Example `.clsecure/config` (commit this to your repo):
+
+```ini
+# Require container isolation for this project
+mode = container
+
+# Longer timeout for cleanup hooks
+cleanup_hook_timeout = 60
+```
+
+### User Config
 
 Create `~/.config/clsecure/config`:
 
@@ -99,9 +132,34 @@ mode = namespace
 # Allow network access by default
 network = true
 
+# Allow Docker access (adds worker to docker group)
+docker = true
+
 # Path to a custom setup script (executed inside the worker environment)
 setup_script = /home/user/.config/clsecure/install_private_tools.sh
 ```
+
+### Docker Access
+
+If your project uses Docker Compose (or any `docker` commands), the worker user needs explicit Docker access. Without it you'll get `permission denied` errors on the Docker socket.
+
+Enable it via CLI flag or config file:
+
+```bash
+# CLI flag
+clsecure --allow-docker
+
+# Or in ~/.config/clsecure/config
+docker = true
+```
+
+What `--allow-docker` does:
+- Adds the worker user to the host's `docker` group
+- In namespace mode: unblacklists the Docker socket in firejail and disables `--noroot` (required for Docker group permissions to work)
+
+> **Note:** Docker group membership grants root-equivalent access on the host. This is a deliberate security trade-off — only enable it for projects that need it.
+
+Projects that use Docker should also provide a [cleanup hook](#cleanup-hooks) (`.clsecure/on-cleanup`) to gracefully stop containers when the session ends.
 
 ### Custom Setup Script (Private Tools)
 
@@ -168,6 +226,24 @@ fi
 4. Runs Claude Code as that user with restricted permissions
 5. After session: syncs changes back and offers to commit
 
+## Cleanup Hooks
+
+Projects can provide a `.clsecure/on-cleanup` executable that runs automatically when a session ends. This is useful for stopping Docker containers, saving database snapshots, or cleaning up background processes.
+
+The hook receives environment variables: `CLSECURE_SESSION`, `CLSECURE_CLEANUP_LEVEL` (`stop` or `purge`), `CLSECURE_PROJECT_DIR`, `CLSECURE_WORKER_USER`, and `CLSECURE_WORKER_HOME`.
+
+```bash
+#!/bin/bash
+# .clsecure/on-cleanup
+export COMPOSE_PROJECT_NAME="myapp-${CLSECURE_SESSION:-default}"
+case "$CLSECURE_CLEANUP_LEVEL" in
+    stop)  docker compose down ;;
+    purge) docker compose down -v --remove-orphans ;;
+esac
+```
+
+See [CLEANUP-HOOKS.md](CLEANUP-HOOKS.md) for detailed documentation and advanced examples.
+
 ## Requirements
 
 - Linux (Ubuntu/Debian/Fedora/Arch)
@@ -193,7 +269,8 @@ clsecure/
 │   ├── sanitize.sh  # Path sanitization
 │   ├── deps.sh      # Dependency installation
 │   ├── isolation.sh # Isolation execution
-│   └── sync.sh      # Sync-back logic
+│   ├── sync.sh      # Sync-back logic
+│   └── cleanup.sh   # Session cleanup
 └── build.sh         # Build script (generates clsecure from modules)
 ```
 
