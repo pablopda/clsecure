@@ -2446,7 +2446,11 @@ case $OPTION in
         ;;
     3)
         log_info "Keeping user '$WORKER_USER' for later."
-        echo "Resume by running 'clsecure' from the same project."
+        if [ -n "$SESSION_NAME" ]; then
+            echo "Resume by running 'clsecure --session $SESSION_NAME' from the same project."
+        else
+            echo "Resume by running 'clsecure' from the same project."
+        fi
         ;;
 esac
 
