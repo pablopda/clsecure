@@ -376,6 +376,9 @@ setup_worker_home
 # Make sure project-local MCP config is portable across worker users
 sanitize_mcp_config
 
+# Rewrite relative "./" paths in hook commands to absolute paths
+sanitize_hook_relative_paths
+
 # Copy configurations
 log_step "Setting up configurations..."
 
