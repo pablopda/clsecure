@@ -115,10 +115,10 @@ setup_git_config() {
     if [ -n "$git_user_name" ] || [ -n "$git_user_email" ]; then
         # Use git config command to safely set values (avoids injection risk)
         if [ -n "$git_user_name" ]; then
-            sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.name "$git_user_name" 2>/dev/null || true
+            sudo -u "$WORKER_USER" git -C "$WORKER_HOME" config --file "$WORKER_HOME/.gitconfig" user.name "$git_user_name" 2>/dev/null || true
         fi
         if [ -n "$git_user_email" ]; then
-            sudo -u "$WORKER_USER" git config --file "$WORKER_HOME/.gitconfig" user.email "$git_user_email" 2>/dev/null || true
+            sudo -u "$WORKER_USER" git -C "$WORKER_HOME" config --file "$WORKER_HOME/.gitconfig" user.email "$git_user_email" 2>/dev/null || true
         fi
     fi
 }
