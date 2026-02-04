@@ -172,6 +172,12 @@ esac
 If no hook exists but docker is enabled, clsecure auto-detects compose files
 and runs `docker compose down` as a fallback.
 
+### Worker Metadata (`$WORKER_HOME/.clsecure/`)
+
+- `project_path` - Host project directory path
+- `session_name` - Session name (if using `--session`)
+- `base_commit` - HEAD at clone time (ensures clean branch imports)
+
 ## Important Notes
 
 - Script must be run from a git repository

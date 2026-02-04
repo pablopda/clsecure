@@ -222,9 +222,10 @@ fi
 
 1. Creates a dedicated Linux user: `claude-worker-<project>`
 2. Clones your git repo (with submodules) to the worker's home
-3. Syncs uncommitted changes
-4. Runs Claude Code as that user with restricted permissions
-5. After session: syncs changes back and offers to commit
+3. Records the base commit (for clean parallel session imports)
+4. Syncs uncommitted changes
+5. Runs Claude Code as that user with restricted permissions
+6. After session: creates an import branch from the base commit and fast-forwards worker changes in
 
 ## Cleanup Hooks
 

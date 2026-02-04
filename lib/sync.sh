@@ -4,11 +4,22 @@
 # Sync-back logic for importing changes from worker to main repository
 # 
 # Dependencies: lib/logging.sh, lib/git.sh, lib/worker.sh, lib/vars.sh
-# Exports: detect_worker_changes, import_commits, import_uncommitted_changes, create_branch_and_import, show_sync_summary
+# Exports: get_worker_base_commit, detect_worker_changes, import_commits, import_uncommitted_changes, create_branch_and_import, show_sync_summary
 # 
 # Usage:
 #   source lib/sync.sh
 #   detect_worker_changes
+
+# Read the base commit recorded at clone time
+# Returns empty string if not available (backward compatibility with legacy workers)
+get_worker_base_commit() {
+    local base_file="$WORKER_HOME/.clsecure/base_commit"
+    if sudo test -f "$base_file"; then
+        sudo cat "$base_file" 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
 
 # Detect changes in worker repository (commits and uncommitted)
 # Sets global variables: WORKER_COMMITS, NUM_COMMITS, WORKER_CHANGES
@@ -75,9 +86,13 @@ import_commits() {
     fi
     
     # Fetch and merge
-    # We fetch HEAD from worker and merge it. 
-    # Since we just created the branch from the same base, this should be a fast-forward or clean merge.
-    if git pull --no-edit "$WORKER_PROJECT" HEAD; then
+    # When branching from the recorded base commit, pull is always a fast-forward.
+    # Use --ff-only to enforce this. Fall back to --no-rebase --no-edit for legacy workers.
+    local pull_flags="--no-rebase --no-edit"
+    if [ -n "$(get_worker_base_commit)" ]; then
+        pull_flags="--ff-only"
+    fi
+    if git pull $pull_flags "$WORKER_PROJECT" HEAD; then
         log_info "✓ Commits imported successfully."
         
         # Restore stashed changes if any
@@ -186,7 +201,14 @@ create_branch_and_import() {
     fi
     
     log_info "Creating branch '$branch_name'..."
-    git checkout -b "$branch_name"
+    local base_commit
+    base_commit=$(get_worker_base_commit)
+    if [ -n "$base_commit" ] && git cat-file -e "$base_commit" 2>/dev/null; then
+        log_info "Branching from session base (${base_commit:0:8})..."
+        git checkout -b "$branch_name" "$base_commit"
+    else
+        git checkout -b "$branch_name"
+    fi
     
     # Import Commits
     if ! import_commits; then

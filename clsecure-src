@@ -362,6 +362,9 @@ if [ "$SKIP_COPY" = false ]; then
         exit 1
     fi
 
+    # Record base commit for accurate branch creation during import
+    git rev-parse HEAD 2>/dev/null | sudo tee "$WORKER_HOME/.clsecure/base_commit" > /dev/null
+
     sync_working_directory
     copy_submodules
 
