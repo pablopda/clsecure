@@ -28,7 +28,6 @@ EOF
 
 teardown() {
     teardown_test
-    rm -f "$HOME/.config/clsecure/config"
 }
 
 # Helper to reinit vars with test dir overrides

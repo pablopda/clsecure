@@ -16,11 +16,28 @@ CLSECURE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 setup_test() {
     TEST_DIR=$(mktemp -d)
     export TEST_DIR
+
+    # Isolate HOME to prevent tests from modifying real user config
+    ORIG_HOME="$HOME"
+    export ORIG_HOME
+    HOME="$TEST_DIR/home"
+    export HOME
+
+    # Create the fake home directory structure
+    mkdir -p "$HOME/.config/clsecure"
+
     cd "$TEST_DIR" || exit 1
 }
 
 # Test teardown: Clean up temporary directory
 teardown_test() {
+    # Restore original HOME
+    if [ -n "${ORIG_HOME:-}" ]; then
+        HOME="$ORIG_HOME"
+        export HOME
+        unset ORIG_HOME
+    fi
+
     if [ -n "${TEST_DIR:-}" ] && [ -d "$TEST_DIR" ]; then
         rm -rf "$TEST_DIR"
     fi
