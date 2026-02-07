@@ -759,7 +759,7 @@ setup_worker_home() {
 # Git operations for clsecure
 # 
 # Dependencies: lib/logging.sh, lib/worker.sh, lib/vars.sh
-# Exports: check_disk_space, clone_repository, sync_working_directory, copy_submodules, setup_git_config
+# Exports: check_disk_space, clone_repository, sync_working_directory, copy_submodules, setup_git_config, copy_git_hooks
 # 
 # Usage:
 #   source lib/git.sh
@@ -857,6 +857,40 @@ copy_submodules() {
         done < <(git config --file "$CURRENT_DIR/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
     fi
     return 0
+}
+
+# Copy git hooks from source repo to worker
+# Hooks are local to each repo and not carried by git clone
+copy_git_hooks() {
+    local src_hooks="$CURRENT_DIR/.git/hooks"
+    local dst_hooks="$WORKER_PROJECT/.git/hooks"
+
+    [ -d "$src_hooks" ] || return 0
+
+    # Find non-sample custom hooks (executable files without .sample extension)
+    local found_hooks=false
+    for hook in "$src_hooks"/*; do
+        [ -f "$hook" ] || continue
+        [[ "$hook" == *.sample ]] && continue
+        found_hooks=true
+        break
+    done
+
+    [ "$found_hooks" = true ] || return 0
+
+    log_info "Copying git hooks from source repository..."
+    for hook in "$src_hooks"/*; do
+        [ -f "$hook" ] || continue
+        [[ "$hook" == *.sample ]] && continue
+        local hook_name
+        hook_name=$(basename "$hook")
+        if sudo cp "$hook" "$dst_hooks/$hook_name" 2>/dev/null; then
+            sudo chmod +x "$dst_hooks/$hook_name"
+            sudo chown "$WORKER_USER:$WORKER_USER" "$dst_hooks/$hook_name"
+        else
+            log_warn "Failed to copy hook: $hook_name"
+        fi
+    done
 }
 
 # Setup git config for worker user (user.name and user.email)
@@ -2337,6 +2371,7 @@ if [ "$SKIP_COPY" = false ]; then
 
     sync_working_directory
     copy_submodules
+    copy_git_hooks
 
     log_info "Project ready at $WORKER_PROJECT"
 fi

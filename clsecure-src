@@ -367,6 +367,7 @@ if [ "$SKIP_COPY" = false ]; then
 
     sync_working_directory
     copy_submodules
+    copy_git_hooks
 
     log_info "Project ready at $WORKER_PROJECT"
 fi
