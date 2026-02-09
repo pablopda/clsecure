@@ -104,38 +104,90 @@ copy_submodules() {
     return 0
 }
 
-# Copy git hooks from source repo to worker
-# Hooks are local to each repo and not carried by git clone
+# Copy git hooks from source repo and host user's global hooks to worker
+# When core.hooksPath is set, git ignores .git/hooks/ entirely, so all hooks
+# must be merged into a single directory under the worker's home.
+# Global hooks take precedence over repo hooks of the same name (they typically
+# include a fallback that chains to the local hook).
 copy_git_hooks() {
     local src_hooks="$CURRENT_DIR/.git/hooks"
-    local dst_hooks="$WORKER_PROJECT/.git/hooks"
+    local global_hooks_path
+    global_hooks_path=$(git config --global core.hooksPath 2>/dev/null || echo "")
 
-    [ -d "$src_hooks" ] || return 0
+    # Expand ~ to host user's home
+    if [ -n "$global_hooks_path" ]; then
+        global_hooks_path="${global_hooks_path/#\~/$HOME}"
+        [ -d "$global_hooks_path" ] || global_hooks_path=""
+    fi
 
-    # Find non-sample custom hooks (executable files without .sample extension)
-    local found_hooks=false
-    for hook in "$src_hooks"/*; do
-        [ -f "$hook" ] || continue
-        [[ "$hook" == *.sample ]] && continue
-        found_hooks=true
-        break
-    done
+    # If global hooksPath is set, merge everything into $WORKER_HOME/.git-hooks
+    # Otherwise, just copy repo hooks to .git/hooks as usual
+    if [ -n "$global_hooks_path" ]; then
+        local worker_hooks_dir="$WORKER_HOME/.git-hooks"
+        sudo mkdir -p "$worker_hooks_dir"
 
-    [ "$found_hooks" = true ] || return 0
-
-    log_info "Copying git hooks from source repository..."
-    for hook in "$src_hooks"/*; do
-        [ -f "$hook" ] || continue
-        [[ "$hook" == *.sample ]] && continue
-        local hook_name
-        hook_name=$(basename "$hook")
-        if sudo cp "$hook" "$dst_hooks/$hook_name" 2>/dev/null; then
-            sudo chmod +x "$dst_hooks/$hook_name"
-            sudo chown "$WORKER_USER:$WORKER_USER" "$dst_hooks/$hook_name"
-        else
-            log_warn "Failed to copy hook: $hook_name"
+        # First: copy repo-level hooks (lower precedence)
+        if [ -d "$src_hooks" ]; then
+            for hook in "$src_hooks"/*; do
+                [ -f "$hook" ] || continue
+                [[ "$hook" == *.sample ]] && continue
+                local hook_name
+                hook_name=$(basename "$hook")
+                if sudo cp "$hook" "$worker_hooks_dir/$hook_name" 2>/dev/null; then
+                    sudo chmod +x "$worker_hooks_dir/$hook_name"
+                else
+                    log_warn "Failed to copy repo hook: $hook_name"
+                fi
+            done
         fi
-    done
+
+        # Second: copy global hooks (higher precedence, overwrites repo hooks)
+        log_info "Copying git hooks (global + repo) to worker..."
+        for hook in "$global_hooks_path"/*; do
+            [ -f "$hook" ] || continue
+            [[ "$hook" == *.sample ]] && continue
+            local hook_name
+            hook_name=$(basename "$hook")
+            if sudo cp "$hook" "$worker_hooks_dir/$hook_name" 2>/dev/null; then
+                sudo chmod +x "$worker_hooks_dir/$hook_name"
+            else
+                log_warn "Failed to copy global hook: $hook_name"
+            fi
+        done
+
+        sudo chown -R "$WORKER_USER:$WORKER_USER" "$worker_hooks_dir"
+
+        # Set core.hooksPath for the worker user
+        sudo -u "$WORKER_USER" git -C "$WORKER_HOME" config --file "$WORKER_HOME/.gitconfig" core.hooksPath "$worker_hooks_dir" 2>/dev/null || true
+    else
+        # No global hooksPath — copy repo hooks to .git/hooks directly
+        [ -d "$src_hooks" ] || return 0
+
+        local found_hooks=false
+        for hook in "$src_hooks"/*; do
+            [ -f "$hook" ] || continue
+            [[ "$hook" == *.sample ]] && continue
+            found_hooks=true
+            break
+        done
+        [ "$found_hooks" = true ] || return 0
+
+        local dst_hooks="$WORKER_PROJECT/.git/hooks"
+        sudo mkdir -p "$dst_hooks"
+        log_info "Copying git hooks from source repository..."
+        for hook in "$src_hooks"/*; do
+            [ -f "$hook" ] || continue
+            [[ "$hook" == *.sample ]] && continue
+            local hook_name
+            hook_name=$(basename "$hook")
+            if sudo cp "$hook" "$dst_hooks/$hook_name" 2>/dev/null; then
+                sudo chmod +x "$dst_hooks/$hook_name"
+                sudo chown "$WORKER_USER:$WORKER_USER" "$dst_hooks/$hook_name"
+            else
+                log_warn "Failed to copy hook: $hook_name"
+            fi
+        done
+    fi
 }
 
 # Setup git config for worker user (user.name and user.email)

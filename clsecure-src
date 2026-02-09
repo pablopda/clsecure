@@ -367,12 +367,15 @@ if [ "$SKIP_COPY" = false ]; then
 
     sync_working_directory
     copy_submodules
-    copy_git_hooks
 
     log_info "Project ready at $WORKER_PROJECT"
 fi
 
 setup_worker_home
+
+# Copy git hooks (runs on every session, not just fresh setup)
+# Merges repo-level and global hooks into a single directory when core.hooksPath is set
+copy_git_hooks
 
 # Make sure project-local MCP config is portable across worker users
 sanitize_mcp_config
