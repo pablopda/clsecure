@@ -410,6 +410,12 @@ if [ -d "$HOME/.claude" ]; then
     sanitize_worker_claude_home_paths
 fi
 
+# Copy onboarding state so Claude doesn't re-trigger the OAuth login flow
+if [ -f "$HOME/.claude.json" ]; then
+    sudo cp "$HOME/.claude.json" "$WORKER_HOME/.claude.json"
+    sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude.json"
+fi
+
 setup_git_config
 
 # Setup shell environment
