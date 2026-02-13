@@ -78,6 +78,8 @@ init_clsecure_vars() {
     SESSION_NAME_SANITIZED=""  # Sanitized session name
     CLEANUP_HOOK_TIMEOUT=30       # Timeout for project cleanup hooks (seconds)
     SKIP_DOCKER_AUTODETECT=false  # Skip docker auto-detection during cleanup
+    PROVIDER="${PROVIDER:-}"      # API provider: "" (anthropic default), "kimi"
+    KIMI_API_KEY="${KIMI_API_KEY:-}"  # Kimi API key (from config or KIMI_API_KEY env var)
 
     # Config file locations (XDG standard, then fallback)
     CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
@@ -94,7 +96,7 @@ init_clsecure_vars() {
 
     # Export variables that modules need
     export WORKER_USER WORKER_HOME WORKER_PROJECT
-    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT
+    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT PROVIDER KIMI_API_KEY
     export LOCK_FILE LOCK_DIR
     export CONFIG_FILE CONFIG_FILE_ALT PROJECT_CONFIG_FILE
     export RED GREEN YELLOW BLUE CYAN NC
@@ -270,6 +272,10 @@ _project_key_hint() {
             echo "set setup_script in ~/.config/clsecure/config" ;;
         install_dependencies|INSTALL_DEPS)
             echo "use --install-deps or set in ~/.config/clsecure/config" ;;
+        provider|PROVIDER)
+            echo "use --provider or set in ~/.config/clsecure/config" ;;
+        kimi_api_key|KIMI_API_KEY)
+            echo "set in ~/.config/clsecure/config or export KIMI_API_KEY" ;;
         *)
             echo "set in ~/.config/clsecure/config" ;;
     esac
@@ -307,7 +313,9 @@ _parse_config_file() {
                 network|allow_network|ALLOW_NETWORK|\
                 docker|allow_docker|ALLOW_DOCKER|\
                 setup_script|SETUP_SCRIPT|\
-                install_dependencies|INSTALL_DEPS)
+                install_dependencies|INSTALL_DEPS|\
+                provider|PROVIDER|\
+                kimi_api_key|KIMI_API_KEY)
                     log_warn "Project config requests '$key=$value' — ignored ($(_project_key_hint "$key"))"
                     ;;
             esac
@@ -348,6 +356,19 @@ _parse_config_file() {
             skip_docker_autodetect|SKIP_DOCKER_AUTODETECT)
                 if [[ "$value" =~ ^(true|false|yes|no|1|0)$ ]]; then
                     [[ "$value" =~ ^(true|yes|1)$ ]] && SKIP_DOCKER_AUTODETECT=true || SKIP_DOCKER_AUTODETECT=false
+                fi
+                ;;
+            provider|PROVIDER)
+                if [[ "$value" =~ ^(kimi|anthropic)$ ]]; then
+                    PROVIDER="$value"
+                    [ "$value" = "anthropic" ] && PROVIDER=""
+                else
+                    log_warn "Invalid provider '$value' in config (must be anthropic or kimi)"
+                fi
+                ;;
+            kimi_api_key|KIMI_API_KEY)
+                if [ -n "$value" ]; then
+                    KIMI_API_KEY="$value"
                 fi
                 ;;
         esac
@@ -397,6 +418,10 @@ _is_valid_config_value() {
             [ -n "$value" ] ;;
         cleanup_hook_timeout|CLEANUP_HOOK_TIMEOUT)
             [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 5 ] && [ "$value" -le 300 ] ;;
+        provider|PROVIDER)
+            [[ "$value" =~ ^(anthropic|kimi)$ ]] ;;
+        kimi_api_key|KIMI_API_KEY)
+            [ -n "$value" ] ;;
         *)
             return 1 ;;
     esac
@@ -452,11 +477,20 @@ show_config_info() {
     local eff_setup="$SETUP_SCRIPT"
     local eff_cleanup_timeout="$CLEANUP_HOOK_TIMEOUT"
     local eff_skip_docker_auto="$SKIP_DOCKER_AUTODETECT"
+    local eff_provider="${PROVIDER:-anthropic}"
+    [ -z "$PROVIDER" ] && eff_provider="anthropic"
+    local eff_kimi_key="<not set>"
+    if [ -n "$KIMI_API_KEY" ]; then
+        eff_kimi_key="${KIMI_API_KEY:0:10}..."
+    fi
 
     # Determine provenance labels
     local src_mode="default" src_network="default" src_docker="default"
     local src_deps="default" src_setup="default" src_cleanup_timeout="default"
-    local src_skip_docker_auto="default"
+    local src_skip_docker_auto="default" src_provider="default" src_kimi_key="default"
+    # Check env vars for provider settings
+    [ -n "${PROVIDER:-}" ] && src_provider="env/cli"
+    [ -n "${KIMI_API_KEY:-}" ] && src_kimi_key="env"
 
     # Check project config for safe keys (only mark provenance if value is valid)
     if [ -f "$PROJECT_CONFIG_FILE" ]; then
@@ -496,6 +530,8 @@ show_config_info() {
                     setup_script|SETUP_SCRIPT) src_setup="user" ;;
                     cleanup_hook_timeout|CLEANUP_HOOK_TIMEOUT) src_cleanup_timeout="user" ;;
                     skip_docker_autodetect|SKIP_DOCKER_AUTODETECT) src_skip_docker_auto="user" ;;
+                    provider|PROVIDER) src_provider="user" ;;
+                    kimi_api_key|KIMI_API_KEY) src_kimi_key="user" ;;
                 esac
             fi
         done < "$user_config"
@@ -508,6 +544,8 @@ show_config_info() {
     echo "  setup_script = ${eff_setup:-<none>}  [$src_setup]"
     echo "  cleanup_hook_timeout = $eff_cleanup_timeout  [$src_cleanup_timeout]"
     echo "  skip_docker_autodetect = $eff_skip_docker_auto  [$src_skip_docker_auto]"
+    echo "  provider = $eff_provider  [$src_provider]"
+    echo "  kimi_api_key = $eff_kimi_key  [$src_kimi_key]"
     echo ""
     echo "Precedence: CLI args > User config > Project config > Defaults"
     echo ""
@@ -1583,7 +1621,7 @@ show_isolation_info() {
 }
 
 # Build env args array for session environment variables
-# Sets CLSECURE_SESSION and GH_TOKEN when available
+# Forwards CLSECURE_SESSION, GH_TOKEN, and Claude Code API env vars
 _build_session_env() {
     SESSION_ENV_ARGS=()
     if [ -n "${SESSION_NAME:-}" ]; then
@@ -1596,6 +1634,35 @@ _build_session_env() {
     fi
     if [ -n "$gh_token_val" ]; then
         SESSION_ENV_ARGS+=(GH_TOKEN="$gh_token_val")
+    fi
+
+    # Provider-specific API configuration
+    if [ "${PROVIDER:-}" = "kimi" ]; then
+        SESSION_ENV_ARGS+=(ANTHROPIC_BASE_URL="https://api.kimi.com/coding/")
+        SESSION_ENV_ARGS+=(ANTHROPIC_API_KEY="$KIMI_API_KEY")
+        SESSION_ENV_ARGS+=(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)
+    fi
+
+    # Forward Claude Code API configuration env vars (for manual/custom providers)
+    local api_vars=(
+        ANTHROPIC_BASE_URL
+        ANTHROPIC_AUTH_TOKEN
+        ANTHROPIC_API_KEY
+        ANTHROPIC_MODEL
+        ANTHROPIC_DEFAULT_OPUS_MODEL
+        ANTHROPIC_DEFAULT_SONNET_MODEL
+        ANTHROPIC_DEFAULT_HAIKU_MODEL
+        CLAUDE_CODE_SUBAGENT_MODEL
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+        API_TIMEOUT_MS
+    )
+    # Only forward env vars if no provider was set (avoid overriding provider config)
+    if [ -z "${PROVIDER:-}" ]; then
+        for var in "${api_vars[@]}"; do
+            if [ -n "${!var:-}" ]; then
+                SESSION_ENV_ARGS+=("$var=${!var}")
+            fi
+        done
     fi
 }
 
@@ -2119,6 +2186,7 @@ OPTIONS:
     --skip-setup        Skip setup script execution
     --full-clone        Clone full git history (slower, default is shallow)
     --session, -s NAME  Run a named session (multiple environments per project)
+    --provider NAME     API provider: anthropic (default), kimi
 
 ISOLATION MODES:
     user                Basic user isolation (original clsecure behavior)
@@ -2164,6 +2232,9 @@ EXAMPLES:
     # Run multiple sessions for the same project
     clsecure --session auth
     clsecure --session payments
+
+    # Run with Kimi K2.5 as the API provider
+    clsecure --provider kimi
 
 SECURITY MODEL:
     User isolation:      Dedicated Linux user per project
@@ -2270,12 +2341,31 @@ while [[ $# -gt 0 ]]; do
             SESSION_NAME="$2"
             shift 2
             ;;
+        --provider)
+            PROVIDER="$2"
+            if [[ ! "$PROVIDER" =~ ^(anthropic|kimi)$ ]]; then
+                log_error "Invalid provider: $PROVIDER (must be anthropic or kimi)"
+                exit 1
+            fi
+            [ "$PROVIDER" = "anthropic" ] && PROVIDER=""
+            shift 2
+            ;;
         *)
             log_error "Unknown option: $1"
             show_help
             ;;
     esac
 done
+
+# Validate provider API key
+if [ "$PROVIDER" = "kimi" ]; then
+    if [ -z "$KIMI_API_KEY" ]; then
+        log_error "Kimi provider requires an API key."
+        log_info "Set it via: export KIMI_API_KEY=sk-kimi-..."
+        log_info "Or add 'kimi_api_key = sk-kimi-...' to ~/.config/clsecure/config"
+        exit 1
+    fi
+fi
 
 # Recompute worker variables if a session name was provided
 if [ -n "$SESSION_NAME" ]; then
@@ -2341,6 +2431,7 @@ fi
 log_info "Project: $PROJECT_NAME"
 log_info "Branch: $ORIGINAL_BRANCH"
 [ -n "$SESSION_NAME" ] && log_info "Session: $SESSION_NAME"
+[ -n "$PROVIDER" ] && log_info "Provider: $PROVIDER"
 log_info "Worker user: $WORKER_USER"
 log_security "Isolation: $ISOLATION_MODE$([ "$ALLOW_NETWORK" = true ] && echo " (network enabled)" || echo " (network disabled)")$([ "$ALLOW_DOCKER" = true ] && echo " (docker enabled)")"
 

@@ -132,7 +132,7 @@ show_isolation_info() {
 }
 
 # Build env args array for session environment variables
-# Sets CLSECURE_SESSION and GH_TOKEN when available
+# Forwards CLSECURE_SESSION, GH_TOKEN, and Claude Code API env vars
 _build_session_env() {
     SESSION_ENV_ARGS=()
     if [ -n "${SESSION_NAME:-}" ]; then
@@ -145,6 +145,35 @@ _build_session_env() {
     fi
     if [ -n "$gh_token_val" ]; then
         SESSION_ENV_ARGS+=(GH_TOKEN="$gh_token_val")
+    fi
+
+    # Provider-specific API configuration
+    if [ "${PROVIDER:-}" = "kimi" ]; then
+        SESSION_ENV_ARGS+=(ANTHROPIC_BASE_URL="https://api.kimi.com/coding/")
+        SESSION_ENV_ARGS+=(ANTHROPIC_API_KEY="$KIMI_API_KEY")
+        SESSION_ENV_ARGS+=(CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)
+    fi
+
+    # Forward Claude Code API configuration env vars (for manual/custom providers)
+    local api_vars=(
+        ANTHROPIC_BASE_URL
+        ANTHROPIC_AUTH_TOKEN
+        ANTHROPIC_API_KEY
+        ANTHROPIC_MODEL
+        ANTHROPIC_DEFAULT_OPUS_MODEL
+        ANTHROPIC_DEFAULT_SONNET_MODEL
+        ANTHROPIC_DEFAULT_HAIKU_MODEL
+        CLAUDE_CODE_SUBAGENT_MODEL
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+        API_TIMEOUT_MS
+    )
+    # Only forward env vars if no provider was set (avoid overriding provider config)
+    if [ -z "${PROVIDER:-}" ]; then
+        for var in "${api_vars[@]}"; do
+            if [ -n "${!var:-}" ]; then
+                SESSION_ENV_ARGS+=("$var=${!var}")
+            fi
+        done
     fi
 }
 

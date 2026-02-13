@@ -63,6 +63,7 @@ OPTIONS:
     --skip-setup        Skip setup script execution
     --full-clone        Clone full git history (slower, default is shallow)
     --session, -s NAME  Run a named session (multiple environments per project)
+    --provider NAME     API provider: anthropic (default), kimi
 
 ISOLATION MODES:
     user                Basic user isolation (original clsecure behavior)
@@ -108,6 +109,9 @@ EXAMPLES:
     # Run multiple sessions for the same project
     clsecure --session auth
     clsecure --session payments
+
+    # Run with Kimi K2.5 as the API provider
+    clsecure --provider kimi
 
 SECURITY MODEL:
     User isolation:      Dedicated Linux user per project
@@ -214,12 +218,31 @@ while [[ $# -gt 0 ]]; do
             SESSION_NAME="$2"
             shift 2
             ;;
+        --provider)
+            PROVIDER="$2"
+            if [[ ! "$PROVIDER" =~ ^(anthropic|kimi)$ ]]; then
+                log_error "Invalid provider: $PROVIDER (must be anthropic or kimi)"
+                exit 1
+            fi
+            [ "$PROVIDER" = "anthropic" ] && PROVIDER=""
+            shift 2
+            ;;
         *)
             log_error "Unknown option: $1"
             show_help
             ;;
     esac
 done
+
+# Validate provider API key
+if [ "$PROVIDER" = "kimi" ]; then
+    if [ -z "$KIMI_API_KEY" ]; then
+        log_error "Kimi provider requires an API key."
+        log_info "Set it via: export KIMI_API_KEY=sk-kimi-..."
+        log_info "Or add 'kimi_api_key = sk-kimi-...' to ~/.config/clsecure/config"
+        exit 1
+    fi
+fi
 
 # Recompute worker variables if a session name was provided
 if [ -n "$SESSION_NAME" ]; then
@@ -285,6 +308,7 @@ fi
 log_info "Project: $PROJECT_NAME"
 log_info "Branch: $ORIGINAL_BRANCH"
 [ -n "$SESSION_NAME" ] && log_info "Session: $SESSION_NAME"
+[ -n "$PROVIDER" ] && log_info "Provider: $PROVIDER"
 log_info "Worker user: $WORKER_USER"
 log_security "Isolation: $ISOLATION_MODE$([ "$ALLOW_NETWORK" = true ] && echo " (network enabled)" || echo " (network disabled)")$([ "$ALLOW_DOCKER" = true ] && echo " (docker enabled)")"
 

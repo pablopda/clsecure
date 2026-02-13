@@ -63,6 +63,8 @@ init_clsecure_vars() {
     SESSION_NAME_SANITIZED=""  # Sanitized session name
     CLEANUP_HOOK_TIMEOUT=30       # Timeout for project cleanup hooks (seconds)
     SKIP_DOCKER_AUTODETECT=false  # Skip docker auto-detection during cleanup
+    PROVIDER="${PROVIDER:-}"      # API provider: "" (anthropic default), "kimi"
+    KIMI_API_KEY="${KIMI_API_KEY:-}"  # Kimi API key (from config or KIMI_API_KEY env var)
 
     # Config file locations (XDG standard, then fallback)
     CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/clsecure/config"
@@ -79,7 +81,7 @@ init_clsecure_vars() {
 
     # Export variables that modules need
     export WORKER_USER WORKER_HOME WORKER_PROJECT
-    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT
+    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT PROVIDER KIMI_API_KEY
     export LOCK_FILE LOCK_DIR
     export CONFIG_FILE CONFIG_FILE_ALT PROJECT_CONFIG_FILE
     export RED GREEN YELLOW BLUE CYAN NC

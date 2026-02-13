@@ -527,3 +527,124 @@ EOF
     ! _is_valid_config_value "cleanup_hook_timeout" "500"
     ! _is_valid_config_value "cleanup_hook_timeout" "abc"
 }
+
+# --- Provider config ---
+
+@test "load_config reads provider from user config" {
+    cat > "$HOME/.config/clsecure/config" << EOF
+provider = kimi
+kimi_api_key = sk-kimi-test123
+EOF
+
+    _reinit
+    load_config
+    [ "$PROVIDER" = "kimi" ]
+    [ "$KIMI_API_KEY" = "sk-kimi-test123" ]
+}
+
+@test "load_config normalizes provider=anthropic to empty" {
+    cat > "$HOME/.config/clsecure/config" << EOF
+provider = anthropic
+EOF
+
+    _reinit
+    load_config
+    [ "$PROVIDER" = "" ]
+}
+
+@test "load_config warns on invalid provider value" {
+    cat > "$HOME/.config/clsecure/config" << EOF
+provider = openai
+EOF
+
+    _reinit
+    run load_config
+    [[ "$output" == *"Invalid provider"* ]]
+    [[ "$output" == *"openai"* ]]
+}
+
+@test "load_config ignores provider from project config" {
+    rm -f "$HOME/.config/clsecure/config"
+    rm -f "$HOME/.clsecurerc"
+
+    mkdir -p "$TEST_DIR/.clsecure"
+    cat > "$TEST_DIR/.clsecure/config" << EOF
+provider = kimi
+EOF
+
+    _reinit
+    load_config
+    [ "$PROVIDER" = "" ]
+}
+
+@test "load_config warns on provider in project config" {
+    rm -f "$HOME/.config/clsecure/config"
+    rm -f "$HOME/.clsecurerc"
+
+    mkdir -p "$TEST_DIR/.clsecure"
+    cat > "$TEST_DIR/.clsecure/config" << EOF
+provider = kimi
+EOF
+
+    _reinit
+    run load_config
+    [[ "$output" == *"ignored"* ]]
+    [[ "$output" == *"provider"* ]]
+}
+
+@test "load_config ignores kimi_api_key from project config" {
+    rm -f "$HOME/.config/clsecure/config"
+    rm -f "$HOME/.clsecurerc"
+
+    mkdir -p "$TEST_DIR/.clsecure"
+    cat > "$TEST_DIR/.clsecure/config" << EOF
+kimi_api_key = sk-kimi-evil
+EOF
+
+    _reinit
+    load_config
+    [ "$KIMI_API_KEY" = "" ]
+}
+
+@test "load_config warns on kimi_api_key in project config" {
+    rm -f "$HOME/.config/clsecure/config"
+    rm -f "$HOME/.clsecurerc"
+
+    mkdir -p "$TEST_DIR/.clsecure"
+    cat > "$TEST_DIR/.clsecure/config" << EOF
+kimi_api_key = sk-kimi-evil
+EOF
+
+    _reinit
+    run load_config
+    [[ "$output" == *"ignored"* ]]
+    [[ "$output" == *"kimi_api_key"* ]]
+}
+
+@test "_is_valid_config_value validates provider" {
+    _is_valid_config_value "provider" "kimi"
+    _is_valid_config_value "provider" "anthropic"
+    ! _is_valid_config_value "provider" "openai"
+    ! _is_valid_config_value "provider" ""
+}
+
+@test "_is_valid_config_value validates kimi_api_key" {
+    _is_valid_config_value "kimi_api_key" "sk-kimi-test"
+    ! _is_valid_config_value "kimi_api_key" ""
+}
+
+@test "KIMI_API_KEY env var preserved through init" {
+    export KIMI_API_KEY="sk-kimi-from-env"
+    _reinit
+    [ "$KIMI_API_KEY" = "sk-kimi-from-env" ]
+    unset KIMI_API_KEY
+}
+
+@test "show_config_info displays provider and kimi_api_key" {
+    PROVIDER="kimi"
+    KIMI_API_KEY="sk-kimi-test123456789"
+    run show_config_info
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"provider = kimi"* ]]
+    [[ "$output" == *"kimi_api_key = sk-kimi-te..."* ]]
+}
