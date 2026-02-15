@@ -2548,56 +2548,55 @@ sanitize_hook_relative_paths
 # Copy configurations
 log_step "Setting up configurations..."
 
-if [ -d "$HOME/.claude" ]; then
-    log_info "Copying Claude config (excluding large files)..."
-    sudo mkdir -p "$WORKER_HOME/.claude"
-    # Use rsync to exclude large unnecessary files for faster copy
-    rsync_excludes=(
-        --exclude='debug'
-        --exclude='file-history'
-        --exclude='history.jsonl'
-        --exclude='cache'
-        --exclude='paste-cache'
-        --exclude='plans'
-        --exclude='__store.db'
-        --exclude='*.db'
-        --exclude='*.log'
-        --exclude='venv'
-        --exclude='.venv'
-        --exclude='__pycache__'
-        --exclude='.git'
-        --exclude='node_modules'
-    )
-    # When using a third-party provider, exclude OAuth credentials
-    # to prevent auth conflict (token + API key both present)
-    if [ -n "${PROVIDER:-}" ]; then
-        rsync_excludes+=(--exclude='.credentials.json')
-    fi
-    sudo rsync -a "${rsync_excludes[@]}" \
-        "$HOME/.claude/" "$WORKER_HOME/.claude/" 2>/dev/null || true
-    sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude"
-    sanitize_worker_claude_home_paths
+# Detect provider switch to prevent cross-contamination between providers.
+# When switching (e.g. kimi → anthropic or anthropic → kimi), we clean the
+# worker's Claude config to start fresh.
+LAST_PROVIDER=$(sudo cat "$WORKER_HOME/.clsecure/provider" 2>/dev/null || echo "")
+CURRENT_PROVIDER="${PROVIDER:-}"
+PROVIDER_SWITCHED=false
+if [ "$LAST_PROVIDER" != "$CURRENT_PROVIDER" ] && [ -n "$LAST_PROVIDER" -o -n "$CURRENT_PROVIDER" ]; then
+    PROVIDER_SWITCHED=true
+    log_info "Provider changed (${LAST_PROVIDER:-anthropic} -> ${CURRENT_PROVIDER:-anthropic}), cleaning config..."
+    sudo rm -rf "$WORKER_HOME/.claude" "$WORKER_HOME/.claude.json"
 fi
+# Record current provider for next session
+echo "$CURRENT_PROVIDER" | sudo tee "$WORKER_HOME/.clsecure/provider" > /dev/null
 
-# Copy onboarding state so Claude doesn't re-trigger the OAuth login flow
-if [ -f "$HOME/.claude.json" ]; then
-    if [ -z "${PROVIDER:-}" ]; then
-        # Default provider: copy as-is (includes OAuth state)
-        sudo cp "$HOME/.claude.json" "$WORKER_HOME/.claude.json"
-    else
-        # Third-party provider: copy but strip OAuth fields to avoid auth conflict
-        python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-for key in ['oauthAccount', 'customApiKeyResponses']:
-    data.pop(key, None)
-print(json.dumps(data, indent=2))
-" "$HOME/.claude.json" | sudo tee "$WORKER_HOME/.claude.json" > /dev/null
-        # Also remove credentials from previous sessions
-        sudo rm -f "$WORKER_HOME/.claude/.credentials.json"
+if [ -z "${PROVIDER:-}" ]; then
+    # Default provider (Anthropic): copy Claude config for session continuity
+    if [ -d "$HOME/.claude" ]; then
+        log_info "Copying Claude config (excluding large files)..."
+        sudo mkdir -p "$WORKER_HOME/.claude"
+        sudo rsync -a \
+            --exclude='debug' \
+            --exclude='file-history' \
+            --exclude='history.jsonl' \
+            --exclude='cache' \
+            --exclude='paste-cache' \
+            --exclude='plans' \
+            --exclude='__store.db' \
+            --exclude='*.db' \
+            --exclude='*.log' \
+            --exclude='venv' \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            "$HOME/.claude/" "$WORKER_HOME/.claude/" 2>/dev/null || true
+        sudo chown -R "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude"
+        sanitize_worker_claude_home_paths
     fi
-    sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude.json"
+
+    # Copy onboarding state with OAuth so user stays logged in
+    if [ -f "$HOME/.claude.json" ]; then
+        sudo cp "$HOME/.claude.json" "$WORKER_HOME/.claude.json"
+        sudo chown "$WORKER_USER:$WORKER_USER" "$WORKER_HOME/.claude.json"
+    fi
+else
+    # Third-party provider (e.g. kimi): no config copy, just env vars.
+    # Clean any leftover config to avoid contamination from previous sessions.
+    sudo rm -rf "$WORKER_HOME/.claude" "$WORKER_HOME/.claude.json"
+    log_info "Third-party provider: skipping Claude config copy (env vars only)"
 fi
 
 setup_git_config
@@ -2680,11 +2679,11 @@ log_info "Project: $WORKER_PROJECT"
 log_security "Isolation: $ISOLATION_MODE"
 echo ""
 
-# Add --continue flag if resuming an existing session
-# Skip --continue for third-party providers (e.g. kimi) as they may not
-# store conversation state in the same location as the default provider
+# Add --continue flag if resuming an existing Anthropic session.
+# Skip when: using a third-party provider, or provider just switched
+# (config was cleaned, so there's no conversation to continue).
 CONTINUE_FLAG=""
-if [ "$SKIP_COPY" = true ] && [ -z "${PROVIDER:-}" ]; then
+if [ "$SKIP_COPY" = true ] && [ -z "${PROVIDER:-}" ] && [ "$PROVIDER_SWITCHED" = false ]; then
     CONTINUE_FLAG="--continue"
     log_info "Resuming previous Claude session..."
 fi

@@ -141,7 +141,20 @@ clsecure --session payments   # separate worker for payments work
 
 # Debug shell with a named session
 clsecure --shell --skip-setup --session mytest
+
+# Use a third-party API provider (e.g. kimi)
+export KIMI_API_KEY=sk-kimi-...
+clsecure --provider kimi
 ```
+
+### Provider Isolation
+
+Third-party provider sessions (e.g. `--provider kimi`) are fully isolated:
+- No Claude config (`~/.claude/`, `~/.claude.json`) is copied to the worker
+- Only environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`) are set
+- Session history is not preserved (trade-off for clean isolation)
+- Switching providers on the same worker auto-cleans config to prevent cross-contamination
+- Provider is tracked in `$WORKER_HOME/.clsecure/provider` metadata
 
 ### Project-Level Config
 

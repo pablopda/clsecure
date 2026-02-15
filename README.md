@@ -57,6 +57,8 @@ Options:
   --mode MODE       user | namespace (default) | container
   --allow-network   Allow network access
   --allow-docker    Allow Docker access
+  --session NAME    Named session (multiple workers per project)
+  --provider NAME   API provider: anthropic (default), kimi
   --info            Show isolation details
 ```
 
@@ -78,12 +80,49 @@ clsecure --mode container
 # Simple isolation (user only)
 clsecure --mode user
 
+# Named sessions (multiple workers per project)
+clsecure --session frontend
+clsecure --session backend
+
+# Use a third-party API provider
+clsecure --provider kimi
+
 # List all worker users
 clsecure --list
 
 # Clean up workers
 clsecure --cleanup
 ```
+
+## Third-Party API Providers
+
+clsecure supports running Claude Code against third-party API endpoints that are compatible with the Anthropic API.
+
+```bash
+# Use Kimi as the API provider
+export KIMI_API_KEY=sk-kimi-...
+clsecure --provider kimi
+
+# Or set the key in your user config (~/.config/clsecure/config)
+# kimi_api_key = sk-kimi-...
+```
+
+### Supported Providers
+
+| Provider | Flag | Required Config |
+|----------|------|----------------|
+| Anthropic | `--provider anthropic` (default) | Claude login or `ANTHROPIC_API_KEY` |
+| Kimi | `--provider kimi` | `KIMI_API_KEY` env var or config |
+
+### Provider Isolation
+
+Provider sessions are fully isolated from each other to prevent cross-contamination:
+
+- **Anthropic sessions** copy your Claude login and config to the worker, enabling session continuity (`--continue` works across restarts).
+- **Third-party provider sessions** use only environment variables (API key + base URL). No Claude config is copied to or from the worker. Session history is not preserved.
+- **Switching providers** on the same worker automatically cleans the Claude config before starting, so a Kimi session never affects a subsequent Anthropic session and vice versa.
+
+The provider used for each session is tracked in worker metadata. When a provider change is detected, the worker's `~/.claude/` and `~/.claude.json` are cleaned before setup.
 
 ## Configuration & Custom Setup
 
