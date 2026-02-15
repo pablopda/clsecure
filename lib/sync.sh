@@ -32,7 +32,9 @@ detect_worker_changes() {
 
     WORKER_COMMITS=$(sudo -u "$WORKER_USER" git -C "$WORKER_PROJECT" log --oneline origin/$ORIGINAL_BRANCH..HEAD 2>/dev/null || echo "")
     # Count commits using grep -c (more accurate than wc -l which counts newlines)
-    NUM_COMMITS=$(echo "$WORKER_COMMITS" | grep -c . 2>/dev/null || echo 0)
+    # Note: grep -c returns exit 1 when count is 0, so || echo 0 would append "0"
+    # to grep's own "0" output. Use a separate fallback to avoid "0\n0".
+    NUM_COMMITS=$(echo "$WORKER_COMMITS" | grep -c . 2>/dev/null) || NUM_COMMITS=0
 
     # 2. Check for UNCOMMITTED changes
     WORKER_CHANGES=$(sudo -u "$WORKER_USER" bash -c "cd '$WORKER_PROJECT' && git status --porcelain" 2>/dev/null || echo "")
@@ -55,7 +57,7 @@ show_sync_summary() {
     if [ -n "$WORKER_CHANGES" ]; then
         echo -e "${CYAN}Uncommitted changes:${NC}"
         echo "$WORKER_CHANGES" | head -10
-        local change_count=$(echo "$WORKER_CHANGES" | grep -c . 2>/dev/null || echo 0)
+        local change_count=$(echo "$WORKER_CHANGES" | grep -c . 2>/dev/null) || change_count=0
         [ "$change_count" -gt 10 ] && echo "... and more"
     fi
     echo ""

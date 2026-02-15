@@ -201,7 +201,14 @@ start_namespace_session() {
         docker_flags="--noblacklist=/var/run/docker.sock --noblacklist=/run/docker.sock"
     fi
 
-    sudo -u "$WORKER_USER" env "${SESSION_ENV_ARGS[@]}" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown -- $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
+    # Build firejail --env flags to explicitly pass env vars through the sandbox
+    # (firejail may not inherit parent environment depending on version/config)
+    local firejail_env_flags=""
+    for env_entry in "${SESSION_ENV_ARGS[@]}"; do
+        firejail_env_flags+=" --env=${env_entry}"
+    done
+
+    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown $firejail_env_flags -- $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
 }
 
 # Start container isolation session (podman)
@@ -232,6 +239,12 @@ start_namespace_shell() {
         docker_flags="--noblacklist=/var/run/docker.sock --noblacklist=/run/docker.sock"
     fi
 
+    # Build firejail --env flags to explicitly pass env vars through the sandbox
+    local firejail_env_flags=""
+    for env_entry in "${SESSION_ENV_ARGS[@]}"; do
+        firejail_env_flags+=" --env=${env_entry}"
+    done
+
     log_info "Starting shell in firejail namespace..."
-    sudo -u "$WORKER_USER" env "${SESSION_ENV_ARGS[@]}" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown -- bash -l"
+    sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown $firejail_env_flags -- bash -l"
 }
