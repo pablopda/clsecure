@@ -51,7 +51,7 @@ init_clsecure_vars() {
     LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
 
     # Default isolation settings (can be overridden by config file and CLI args)
-    ISOLATION_MODE="namespace"  # Options: user, namespace, container
+    ISOLATION_MODE="namespace"  # Options: user, namespace
     ALLOW_NETWORK=true
     ALLOW_DOCKER=false
     INSTALL_DEPS=false

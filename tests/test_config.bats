@@ -86,13 +86,13 @@ _reinit() {
 @test "load_config reads CONFIG_FILE_ALT fallback" {
     rm -f "$HOME/.config/clsecure/config"
     cat > "$HOME/.clsecurerc" << EOF
-mode = container
+mode = namespace
 docker = true
 EOF
 
     _reinit
     load_config
-    [ "$ISOLATION_MODE" = "container" ]
+    [ "$ISOLATION_MODE" = "namespace" ]
     [ "$ALLOW_DOCKER" = "true" ]
 
     rm -f "$HOME/.clsecurerc"
@@ -167,12 +167,13 @@ EOF
 
     mkdir -p "$TEST_DIR/.clsecure"
     cat > "$TEST_DIR/.clsecure/config" << EOF
-mode = container
+mode = namespace
 EOF
 
     _reinit
     load_config
-    [ "$ISOLATION_MODE" = "container" ]
+
+    [ "$ISOLATION_MODE" = "namespace" ]
 }
 
 @test "project config cleanup_hook_timeout is applied" {
@@ -406,7 +407,7 @@ EOF
 # This is a comment
    # indented comment
 
-mode = container
+mode = namespace
 
 # another comment
 cleanup_hook_timeout = 60
@@ -414,7 +415,7 @@ EOF
 
     _reinit
     load_config
-    [ "$ISOLATION_MODE" = "container" ]
+    [ "$ISOLATION_MODE" = "namespace" ]
     [ "$CLEANUP_HOOK_TIMEOUT" = "60" ]
 }
 
@@ -424,12 +425,12 @@ EOF
 
     mkdir -p "$TEST_DIR/.clsecure"
     cat > "$TEST_DIR/.clsecure/config" << EOF
-mode = "container"
+mode = "namespace"
 EOF
 
     _reinit
     load_config
-    [ "$ISOLATION_MODE" = "container" ]
+    [ "$ISOLATION_MODE" = "namespace" ]
 }
 
 @test "load_config handles single-quoted values" {
@@ -438,12 +439,12 @@ EOF
 
     mkdir -p "$TEST_DIR/.clsecure"
     cat > "$TEST_DIR/.clsecure/config" << EOF
-mode = 'container'
+mode = 'namespace'
 EOF
 
     _reinit
     load_config
-    [ "$ISOLATION_MODE" = "container" ]
+    [ "$ISOLATION_MODE" = "namespace" ]
 }
 
 @test "load_config rejects invalid mode value" {
@@ -476,7 +477,7 @@ EOF
 
 @test "load_config accepts key name aliases in user config" {
     cat > "$HOME/.config/clsecure/config" << EOF
-isolation_mode = container
+isolation_mode = namespace
 allow_network = false
 allow_docker = true
 INSTALL_DEPS = true
@@ -484,7 +485,7 @@ EOF
 
     _reinit
     load_config
-    [ "$ISOLATION_MODE" = "container" ]
+    [ "$ISOLATION_MODE" = "namespace" ]
     [ "$ALLOW_NETWORK" = "false" ]
     [ "$ALLOW_DOCKER" = "true" ]
     [ "$INSTALL_DEPS" = "true" ]
@@ -505,7 +506,7 @@ EOF
 @test "_is_valid_config_value validates mode" {
     _is_valid_config_value "mode" "user"
     _is_valid_config_value "mode" "namespace"
-    _is_valid_config_value "mode" "container"
+    _is_valid_config_value "mode" "namespace"
     ! _is_valid_config_value "mode" "invalid"
     ! _is_valid_config_value "mode" ""
 }
@@ -593,6 +594,7 @@ EOF
 }
 
 @test "load_config ignores kimi_api_key from project config" {
+    unset KIMI_API_KEY
     rm -f "$HOME/.config/clsecure/config"
     rm -f "$HOME/.clsecurerc"
 

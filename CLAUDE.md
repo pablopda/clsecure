@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**clsecure** is a bash script that runs Claude Code in an isolated environment using dedicated Linux users and optional namespace/container isolation.
+**clsecure** is a bash script that runs Claude Code in an isolated environment using dedicated Linux users and optional namespace/namespace isolation.
 
 ## Key Files
 
@@ -21,7 +21,7 @@ The script creates a dedicated Linux user (`claude-worker-<project>`) per projec
 
 1. **user** - Basic user isolation (security: 6/10)
 2. **namespace** - User + firejail namespace (security: 8/10) - RECOMMENDED
-3. **container** - User + podman rootless container (security: 9/10)
+3. **namespace** - User + podman rootless namespace (security: 9/10)
 
 ## Development Guidelines
 
@@ -201,7 +201,7 @@ and runs `docker compose down` as a fallback.
 - Script must be run from a git repository
 - Requires: git, rsync, sudo
 - For namespace mode: firejail
-- For container mode: podman
+- For namespace mode: podman
 - Git submodules are copied from the source directory (avoids SSH key requirements for worker users)
 
 ## Installation

@@ -66,7 +66,7 @@ init_clsecure_vars() {
     LOCK_FILE="$LOCK_DIR/${WORKER_USER}.lock"
 
     # Default isolation settings (can be overridden by config file and CLI args)
-    ISOLATION_MODE="namespace"  # Options: user, namespace, container
+    ISOLATION_MODE="namespace"  # Options: user, namespace
     ALLOW_NETWORK=true
     ALLOW_DOCKER=false
     INSTALL_DEPS=false
@@ -324,7 +324,7 @@ _parse_config_file() {
 
         case "$key" in
             mode|isolation_mode|ISOLATION_MODE)
-                if [[ "$value" =~ ^(user|namespace|container)$ ]]; then
+                if [[ "$value" =~ ^(user|namespace)$ ]]; then
                     ISOLATION_MODE="$value"
                 fi
                 ;;
@@ -408,7 +408,7 @@ _is_valid_config_value() {
     local value="$2"
     case "$key" in
         mode|isolation_mode|ISOLATION_MODE)
-            [[ "$value" =~ ^(user|namespace|container)$ ]] ;;
+            [[ "$value" =~ ^(user|namespace)$ ]] ;;
         network|allow_network|ALLOW_NETWORK|\
         docker|allow_docker|ALLOW_DOCKER|\
         install_dependencies|INSTALL_DEPS|\
@@ -1808,7 +1808,7 @@ run_setup_script() {
 # Isolation mode execution for clsecure
 # 
 # Dependencies: lib/logging.sh, lib/config.sh, lib/worker.sh, lib/vars.sh
-# Exports: check_isolation_requirements, show_isolation_info, start_user_session, start_namespace_session, start_container_session
+# Exports: check_isolation_requirements, show_isolation_info, start_user_session, start_namespace_session
 # 
 # Usage:
 #   source lib/isolation.sh
@@ -1824,14 +1824,6 @@ check_isolation_requirements() {
                 exit 1
             fi
             log_security "Namespace isolation enabled (firejail)"
-            ;;
-        container)
-            if ! command -v podman &>/dev/null; then
-                log_error "Podman not found. Install with: sudo apt install podman"
-                log_info "Or use --mode namespace for firejail isolation"
-                exit 1
-            fi
-            log_security "Container isolation enabled (podman)"
             ;;
         user)
             log_security "User isolation enabled (basic)"
@@ -1888,20 +1880,6 @@ show_isolation_info() {
             echo -e "${GREEN}Security Level: 8/10${NC}"
             echo "Good for: Most use cases, excellent security/usability balance"
             ;;
-        container)
-            echo -e "${CYAN}Container + User Namespace Isolation (Maximum)${NC}"
-            echo "  ✓ All namespace isolation features"
-            echo "  ✓ Rootless container (podman)"
-            echo "  ✓ Complete filesystem isolation"
-            echo "  ✓ Immutable base image"
-            echo "  ✓ Resource limits (cgroups)"
-            echo "  ✓ SELinux/AppArmor integration"
-            echo ""
-            echo -e "${CYAN}Security Level: 9/10${NC}"
-            echo "Good for: Maximum security, untrusted code"
-            echo ""
-            echo -e "${YELLOW}Note:${NC} Container mode requires podman and image build"
-            ;;
     esac
 
     echo ""
@@ -1921,13 +1899,6 @@ show_isolation_info() {
             echo "  Privilege escalation:         Blocked"
             echo "  Process interference:         Blocked (PID namespace)"
             echo "  Device access:                Blocked"
-            ;;
-        container)
-            echo "  File access outside project:  Completely isolated"
-            echo "  Network exfiltration:         Configurable"
-            echo "  Privilege escalation:         Blocked (multiple layers)"
-            echo "  Process interference:         Completely isolated"
-            echo "  Device access:                Completely isolated"
             ;;
     esac
 
@@ -2013,15 +1984,6 @@ start_namespace_session() {
     done
 
     sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown $firejail_env_flags -- $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
-}
-
-# Start container isolation session (podman)
-start_container_session() {
-    local continue_flag="$1"
-    # Maximum security: Podman rootless container
-    log_error "Container mode not yet implemented in this prototype"
-    log_info "Use --mode namespace for enhanced isolation"
-    return 1
 }
 
 # Start shell session (user isolation, no Claude)
@@ -2506,7 +2468,7 @@ OPTIONS:
     --status --all      Show all workers (not just current project)
     --cleanup           Interactively remove worker users
     --cleanup-all       Remove ALL claude-worker users (requires confirmation)
-    --mode MODE         Isolation mode: user, namespace (default), container
+    --mode MODE         Isolation mode: user, namespace (default)
     --allow-network     Allow network access (default: from config or true)
     --no-network        Disable network access (--net=none in firejail)
     --allow-docker      Allow access to Docker (WARNING: reduces isolation)
@@ -2523,7 +2485,6 @@ OPTIONS:
 ISOLATION MODES:
     user                Basic user isolation (original clsecure behavior)
     namespace           User + Namespace (firejail) - RECOMMENDED
-    container           User + Container (podman rootless) - MAXIMUM SECURITY
 
 CONFIGURATION FILE:
     Project:  .clsecure/config (per-project, shareable via git)
@@ -2540,7 +2501,6 @@ REQUIREMENTS:
     - rsync
     - sudo privileges
     - For namespace mode: firejail
-    - For container mode: podman
 
 EXAMPLES:
     # Run with recommended namespace isolation
@@ -2571,7 +2531,6 @@ EXAMPLES:
 SECURITY MODEL:
     User isolation:      Dedicated Linux user per project
     Namespace isolation: + Firejail sandbox (PID, mount, network, IPC)
-    Container isolation: + Full containerization (podman rootless)
 
 EOF
     exit 0
@@ -2636,8 +2595,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         --mode)
             ISOLATION_MODE="$2"
-            if [[ ! "$ISOLATION_MODE" =~ ^(user|namespace|container)$ ]]; then
-                log_error "Invalid mode: $ISOLATION_MODE (must be user, namespace, or container)"
+            if [[ ! "$ISOLATION_MODE" =~ ^(user|namespace)$ ]]; then
+                log_error "Invalid mode: $ISOLATION_MODE (must be user or namespace)"
                 exit 1
             fi
             shift 2
@@ -3028,11 +2987,6 @@ if [ "$SHELL_ONLY" = true ]; then
         namespace)
             start_namespace_shell
             ;;
-        container)
-            log_error "Shell mode not implemented for container isolation"
-            release_lock
-            exit 1
-            ;;
     esac
 else
     # Normal Claude session
@@ -3043,12 +2997,6 @@ else
         case $ISOLATION_MODE in
             user)      start_user_session "$flag" ;;
             namespace) start_namespace_session "$flag" ;;
-            container)
-                if ! start_container_session "$flag"; then
-                    release_lock
-                    exit 1
-                fi
-                ;;
         esac
     }
     _run_session "$CONTINUE_FLAG"
@@ -3128,6 +3076,3 @@ esac
 release_lock
 echo ""
 log_info "Done!"
-
-# Register trap handler after all initialization
-trap cleanup_on_exit EXIT

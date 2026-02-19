@@ -28,7 +28,7 @@ What actually happens
 - OS: [e.g., Ubuntu 22.04]
 - Shell: [e.g., bash 5.1]
 - clsecure version: [run `clsecure --version` or check git commit]
-- Isolation mode: [user/namespace/container]
+- Isolation mode: [user/namespace/namespace]
 
 ## Error Messages
 

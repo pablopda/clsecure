@@ -54,7 +54,7 @@ OPTIONS:
     --status --all      Show all workers (not just current project)
     --cleanup           Interactively remove worker users
     --cleanup-all       Remove ALL claude-worker users (requires confirmation)
-    --mode MODE         Isolation mode: user, namespace (default), container
+    --mode MODE         Isolation mode: user, namespace (default)
     --allow-network     Allow network access (default: from config or true)
     --no-network        Disable network access (--net=none in firejail)
     --allow-docker      Allow access to Docker (WARNING: reduces isolation)
@@ -71,7 +71,6 @@ OPTIONS:
 ISOLATION MODES:
     user                Basic user isolation (original clsecure behavior)
     namespace           User + Namespace (firejail) - RECOMMENDED
-    container           User + Container (podman rootless) - MAXIMUM SECURITY
 
 CONFIGURATION FILE:
     Project:  .clsecure/config (per-project, shareable via git)
@@ -88,7 +87,6 @@ REQUIREMENTS:
     - rsync
     - sudo privileges
     - For namespace mode: firejail
-    - For container mode: podman
 
 EXAMPLES:
     # Run with recommended namespace isolation
@@ -119,7 +117,6 @@ EXAMPLES:
 SECURITY MODEL:
     User isolation:      Dedicated Linux user per project
     Namespace isolation: + Firejail sandbox (PID, mount, network, IPC)
-    Container isolation: + Full containerization (podman rootless)
 
 EOF
     exit 0
@@ -184,8 +181,8 @@ while [[ $# -gt 0 ]]; do
             ;;
         --mode)
             ISOLATION_MODE="$2"
-            if [[ ! "$ISOLATION_MODE" =~ ^(user|namespace|container)$ ]]; then
-                log_error "Invalid mode: $ISOLATION_MODE (must be user, namespace, or container)"
+            if [[ ! "$ISOLATION_MODE" =~ ^(user|namespace)$ ]]; then
+                log_error "Invalid mode: $ISOLATION_MODE (must be user or namespace)"
                 exit 1
             fi
             shift 2
@@ -576,11 +573,6 @@ if [ "$SHELL_ONLY" = true ]; then
         namespace)
             start_namespace_shell
             ;;
-        container)
-            log_error "Shell mode not implemented for container isolation"
-            release_lock
-            exit 1
-            ;;
     esac
 else
     # Normal Claude session
@@ -591,12 +583,6 @@ else
         case $ISOLATION_MODE in
             user)      start_user_session "$flag" ;;
             namespace) start_namespace_session "$flag" ;;
-            container)
-                if ! start_container_session "$flag"; then
-                    release_lock
-                    exit 1
-                fi
-                ;;
         esac
     }
     _run_session "$CONTINUE_FLAG"

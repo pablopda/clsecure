@@ -88,7 +88,7 @@ _parse_config_file() {
 
         case "$key" in
             mode|isolation_mode|ISOLATION_MODE)
-                if [[ "$value" =~ ^(user|namespace|container)$ ]]; then
+                if [[ "$value" =~ ^(user|namespace)$ ]]; then
                     ISOLATION_MODE="$value"
                 fi
                 ;;
@@ -172,7 +172,7 @@ _is_valid_config_value() {
     local value="$2"
     case "$key" in
         mode|isolation_mode|ISOLATION_MODE)
-            [[ "$value" =~ ^(user|namespace|container)$ ]] ;;
+            [[ "$value" =~ ^(user|namespace)$ ]] ;;
         network|allow_network|ALLOW_NETWORK|\
         docker|allow_docker|ALLOW_DOCKER|\
         install_dependencies|INSTALL_DEPS|\

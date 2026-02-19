@@ -151,10 +151,6 @@ start { print }
 AWKSCRIPT
 )" "$MAIN_SCRIPT_SRC" >> "$OUTPUT_FILE"
     
-    # Add trap handler at the end (after all initialization)
-    echo "" >> "$OUTPUT_FILE"
-    echo "# Register trap handler after all initialization" >> "$OUTPUT_FILE"
-    echo "trap cleanup_on_exit EXIT" >> "$OUTPUT_FILE"
 else
     echo "Error: Could not find SCRIPT_DIR in $MAIN_SCRIPT_SRC" >&2
     echo "Expected modular source file with SCRIPT_DIR setup" >&2

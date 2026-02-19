@@ -4,7 +4,7 @@
 # Isolation mode execution for clsecure
 # 
 # Dependencies: lib/logging.sh, lib/config.sh, lib/worker.sh, lib/vars.sh
-# Exports: check_isolation_requirements, show_isolation_info, start_user_session, start_namespace_session, start_container_session
+# Exports: check_isolation_requirements, show_isolation_info, start_user_session, start_namespace_session
 # 
 # Usage:
 #   source lib/isolation.sh
@@ -20,14 +20,6 @@ check_isolation_requirements() {
                 exit 1
             fi
             log_security "Namespace isolation enabled (firejail)"
-            ;;
-        container)
-            if ! command -v podman &>/dev/null; then
-                log_error "Podman not found. Install with: sudo apt install podman"
-                log_info "Or use --mode namespace for firejail isolation"
-                exit 1
-            fi
-            log_security "Container isolation enabled (podman)"
             ;;
         user)
             log_security "User isolation enabled (basic)"
@@ -84,20 +76,6 @@ show_isolation_info() {
             echo -e "${GREEN}Security Level: 8/10${NC}"
             echo "Good for: Most use cases, excellent security/usability balance"
             ;;
-        container)
-            echo -e "${CYAN}Container + User Namespace Isolation (Maximum)${NC}"
-            echo "  ✓ All namespace isolation features"
-            echo "  ✓ Rootless container (podman)"
-            echo "  ✓ Complete filesystem isolation"
-            echo "  ✓ Immutable base image"
-            echo "  ✓ Resource limits (cgroups)"
-            echo "  ✓ SELinux/AppArmor integration"
-            echo ""
-            echo -e "${CYAN}Security Level: 9/10${NC}"
-            echo "Good for: Maximum security, untrusted code"
-            echo ""
-            echo -e "${YELLOW}Note:${NC} Container mode requires podman and image build"
-            ;;
     esac
 
     echo ""
@@ -117,13 +95,6 @@ show_isolation_info() {
             echo "  Privilege escalation:         Blocked"
             echo "  Process interference:         Blocked (PID namespace)"
             echo "  Device access:                Blocked"
-            ;;
-        container)
-            echo "  File access outside project:  Completely isolated"
-            echo "  Network exfiltration:         Configurable"
-            echo "  Privilege escalation:         Blocked (multiple layers)"
-            echo "  Process interference:         Completely isolated"
-            echo "  Device access:                Completely isolated"
             ;;
     esac
 
@@ -209,15 +180,6 @@ start_namespace_session() {
     done
 
     sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && cd '$WORKER_PROJECT' && firejail --quiet --noprofile --allusers --read-only=/home/linuxbrew $network_flag --private-dev --private-tmp $docker_flags --caps.drop=all --seccomp --deterministic-shutdown $firejail_env_flags -- $CLAUDE_BIN --dangerously-skip-permissions $continue_flag"
-}
-
-# Start container isolation session (podman)
-start_container_session() {
-    local continue_flag="$1"
-    # Maximum security: Podman rootless container
-    log_error "Container mode not yet implemented in this prototype"
-    log_info "Use --mode namespace for enhanced isolation"
-    return 1
 }
 
 # Start shell session (user isolation, no Claude)

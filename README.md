@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-blue.svg)](https://www.linux.org/)
 [![Shell](https://img.shields.io/badge/shell-bash-green.svg)](https://www.gnu.org/software/bash/)
 
-Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) in an isolated environment using dedicated Linux users with optional namespace/container isolation.
+Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) in an isolated environment using dedicated Linux users with optional namespace/namespace isolation.
 
 ## Why?
 
@@ -43,7 +43,7 @@ clsecure
 |------|----------|--------------|-------------|
 | `user` | ⭐⭐⭐ | sudo | Dedicated Linux user per project |
 | `namespace` | ⭐⭐⭐⭐ | firejail | User + firejail sandbox **(default)** |
-| `container` | ⭐⭐⭐⭐⭐ | podman | User + rootless container |
+| `namespace` | ⭐⭐⭐⭐⭐ | podman | User + rootless namespace |
 
 ## Usage
 
@@ -54,7 +54,7 @@ Options:
   --help, -h        Show help
   --list, -l        List worker users
   --cleanup         Remove worker users
-  --mode MODE       user | namespace (default) | container
+  --mode MODE       user | namespace (default) | namespace
   --allow-network   Allow network access
   --allow-docker    Allow Docker access
   --session NAME    Named session (multiple workers per project)
@@ -74,8 +74,8 @@ clsecure --allow-network
 # With Docker access (for projects using docker compose)
 clsecure --allow-docker
 
-# Maximum security (container isolation)
-clsecure --mode container
+# Maximum security (namespace isolation)
+clsecure --mode namespace
 
 # Simple isolation (user only)
 clsecure --mode user
@@ -141,7 +141,7 @@ For security, only safe settings are accepted from project config. Security-sens
 
 | Setting | Project-safe? | Notes |
 |---------|:---:|-------|
-| `mode` | Yes | Isolation mode (user/namespace/container) |
+| `mode` | Yes | Isolation mode (user/namespace/namespace) |
 | `cleanup_hook_timeout` | Yes | Bounded 5-300s |
 | `skip_docker_autodetect` | Yes | Only affects cleanup fallback |
 | `docker` / `network` | **No** | Use CLI flags or user config |
@@ -151,8 +151,8 @@ For security, only safe settings are accepted from project config. Security-sens
 Example `.clsecure/config` (commit this to your repo):
 
 ```ini
-# Require container isolation for this project
-mode = container
+# Require namespace isolation for this project
+mode = namespace
 
 # Longer timeout for cleanup hooks
 cleanup_hook_timeout = 60
@@ -165,7 +165,7 @@ Create `~/.config/clsecure/config`:
 ```ini
 # ~/.config/clsecure/config
 
-# Default isolation mode (user, namespace, container)
+# Default isolation mode (user, namespace, namespace)
 mode = namespace
 
 # Allow network access by default
@@ -198,7 +198,7 @@ What `--allow-docker` does:
 
 > **Note:** Docker group membership grants root-equivalent access on the host. This is a deliberate security trade-off — only enable it for projects that need it.
 
-Projects that use Docker should also provide a [cleanup hook](#cleanup-hooks) (`.clsecure/on-cleanup`) to gracefully stop containers when the session ends.
+Projects that use Docker should also provide a [cleanup hook](#cleanup-hooks) (`.clsecure/on-cleanup`) to gracefully stop namespaces when the session ends.
 
 ### Custom Setup Script (Private Tools)
 
@@ -268,7 +268,7 @@ fi
 
 ## Cleanup Hooks
 
-Projects can provide a `.clsecure/on-cleanup` executable that runs automatically when a session ends. This is useful for stopping Docker containers, saving database snapshots, or cleaning up background processes.
+Projects can provide a `.clsecure/on-cleanup` executable that runs automatically when a session ends. This is useful for stopping Docker namespaces, saving database snapshots, or cleaning up background processes.
 
 The hook receives environment variables: `CLSECURE_SESSION`, `CLSECURE_CLEANUP_LEVEL` (`stop` or `purge`), `CLSECURE_PROJECT_DIR`, `CLSECURE_WORKER_USER`, and `CLSECURE_WORKER_HOME`.
 
@@ -289,7 +289,7 @@ See [CLEANUP-HOOKS.md](CLEANUP-HOOKS.md) for detailed documentation and advanced
 - Linux (Ubuntu/Debian/Fedora/Arch)
 - `git`, `rsync`, `sudo`
 - For namespace mode: `firejail`
-- For container mode: `podman`
+- For namespace mode: `podman`
 
 ## Development
 
