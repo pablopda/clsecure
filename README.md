@@ -4,11 +4,13 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-blue.svg)](https://www.linux.org/)
 [![Shell](https://img.shields.io/badge/shell-bash-green.svg)](https://www.gnu.org/software/bash/)
 
-Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) in an isolated environment using dedicated Linux users with optional namespace/namespace isolation.
+A secure, isolated sandbox for running Anthropic's [Claude Code](https://docs.anthropic.com/en/docs/claude-code) AI coding assistant. **clsecure** provides defense-in-depth security to protect your system from arbitrary code execution by using dedicated Linux users, network isolation, and optional namespace or container sandboxing. 
 
-## Why?
+**Keywords:** AI agent security, secure coding, Claude Code sandbox, containerized AI, isolated environment.
 
-Claude Code is powerful but can execute arbitrary code on your machine. **clsecure** provides defense-in-depth:
+## Why clsecure?
+
+AI coding assistants like Claude Code are incredibly powerful, but granting them the ability to execute arbitrary code on your local machine presents significant security risks. **clsecure** mitigates these risks by providing robust, defense-in-depth sandboxing:
 
 - 🔒 **Dedicated user per project** - File access isolated from your main user
 - 🌐 **Network isolation** - Prevent data exfiltration (optional)
@@ -343,7 +345,12 @@ The build script concatenates all modules into a single-file `clsecure` for dist
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+We welcome contributions from the community! Whether it's fixing bugs, improving documentation, or proposing new features, your help is appreciated. 
+
+To get involved:
+1. Check the [Issues](https://github.com/pablopda/clsecure/issues) for open tasks or report a new one.
+2. Fork the repository and create a new branch for your feature or bug fix.
+3. Submit a Pull Request with a clear description of your changes.
 
 ### Development Guidelines
 
@@ -353,6 +360,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - Add tests for new functionality
 - Run `./build.sh` before committing
 
+## Support & Contact
+
+If you encounter any issues, have questions, or want to suggest new features, please [open an issue](https://github.com/pablopda/clsecure/issues) on our GitHub repository.
+
 ## License
 
-[MIT](LICENSE)
+This project is licensed under the [MIT License](LICENSE).
