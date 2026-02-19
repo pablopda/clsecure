@@ -26,6 +26,7 @@ source "${LIB_DIR}/config.sh"
 
 # Level 3: Depends on logging + config/vars
 source "${LIB_DIR}/worker.sh"
+source "${LIB_DIR}/status.sh"
 
 # Level 4: Depends on logging + worker + vars
 source "${LIB_DIR}/git.sh"
@@ -49,6 +50,8 @@ Run Claude Code with enhanced isolation (User + Namespace).
 OPTIONS:
     --help, -h          Show this help message
     --list, -l          List all claude-worker users and their status
+    --status            Show worker sessions and commit status
+    --status --all      Show all workers (not just current project)
     --cleanup           Interactively remove worker users
     --cleanup-all       Remove ALL claude-worker users (requires confirmation)
     --mode MODE         Isolation mode: user, namespace (default), container
@@ -161,6 +164,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --list|-l)
             list_workers
+            ;;
+        --status)
+            STATUS_ALL=false
+            [[ "${2:-}" == "--all" ]] && STATUS_ALL=true && shift
+            show_worker_status "$STATUS_ALL"
             ;;
         --cleanup)
             cleanup_workers
