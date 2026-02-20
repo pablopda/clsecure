@@ -68,11 +68,14 @@ sync_working_directory() {
 copy_submodules() {
     # Copy submodules from source if they exist
     # This avoids needing SSH keys since we're copying from the already-cloned source
-    if [ -f "$CURRENT_DIR/.gitmodules" ] && [ -d "$CURRENT_DIR/.git/modules" ]; then
+    local source_modules_dir
+    source_modules_dir="$(cd "$CURRENT_DIR" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" 2>/dev/null && pwd)/modules"
+
+    if [ -f "$CURRENT_DIR/.gitmodules" ] && [ -d "$source_modules_dir" ]; then
         log_info "Copying submodules from source..."
         
         # Copy .git/modules directory (contains submodule git repositories)
-        if ! sudo cp -r "$CURRENT_DIR/.git/modules" "$WORKER_PROJECT/.git/modules" 2>/dev/null; then
+        if ! sudo cp -r "$source_modules_dir" "$WORKER_PROJECT/.git/modules" 2>/dev/null; then
             log_warn "Failed to copy submodules - they may not work correctly"
             return 1
         fi
@@ -110,7 +113,8 @@ copy_submodules() {
 # Global hooks take precedence over repo hooks of the same name (they typically
 # include a fallback that chains to the local hook).
 copy_git_hooks() {
-    local src_hooks="$CURRENT_DIR/.git/hooks"
+    local src_hooks
+    src_hooks="$(cd "$CURRENT_DIR" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .git)" 2>/dev/null && pwd)/hooks"
     local global_hooks_path
     global_hooks_path=$(git config --global core.hooksPath 2>/dev/null || echo "")
 
