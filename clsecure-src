@@ -63,6 +63,7 @@ OPTIONS:
     --config            Show current configuration and config file location
     --info              Show isolation details for current mode
     --shell             Start shell instead of Claude (for debugging)
+    --auto-sync         Non-interactive post-session sync (for EPCTC/programmatic use)
     --skip-setup        Skip setup script execution
     --full-clone        Clone full git history (slower, default is shallow)
     --session, -s NAME  Run a named session (multiple environments per project)
@@ -211,6 +212,10 @@ while [[ $# -gt 0 ]]; do
             SHELL_ONLY=true
             shift
             ;;
+        --auto-sync)
+            AUTO_SYNC=true
+            shift
+            ;;
         --skip-setup)
             SKIP_SETUP=true
             shift
@@ -281,10 +286,14 @@ fi
 
 if ! git diff-index --quiet HEAD -- 2>/dev/null; then
     log_warn "You have uncommitted changes in your working directory."
-    read -p "Continue anyway? (y/n): " continue_anyway
-    if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-        log_info "Aborted. Please commit or stash your changes first."
-        exit 0
+    if [ "${AUTO_SYNC:-false}" = true ]; then
+        log_info "Auto-sync mode: continuing with uncommitted changes."
+    else
+        read -p "Continue anyway? (y/n): " continue_anyway
+        if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+            log_info "Aborted. Please commit or stash your changes first."
+            exit 0
+        fi
     fi
 fi
 
@@ -299,14 +308,18 @@ export ORIGINAL_BRANCH  # Export so it's available in sync.sh functions
 if [[ "$ORIGINAL_BRANCH" =~ ^claude/ ]]; then
     log_warn "You are currently on a temporary Claude branch: $ORIGINAL_BRANCH"
     log_warn "This may prevent proper commit import from the worker session."
-    echo ""
-    echo "It's recommended to switch to your main branch first, for example:"
-    echo "  git checkout main    # or develop, master, etc."
-    echo ""
-    read -p "Continue anyway? (y/n): " CONTINUE_ANYWAY
-    if [[ ! "$CONTINUE_ANYWAY" =~ ^[Yy]$ ]]; then
-        log_info "Aborted. Please switch to your main branch first."
-        exit 0
+    if [ "${AUTO_SYNC:-false}" = true ]; then
+        log_info "Auto-sync mode: continuing on claude/* branch."
+    else
+        echo ""
+        echo "It's recommended to switch to your main branch first, for example:"
+        echo "  git checkout main    # or develop, master, etc."
+        echo ""
+        read -p "Continue anyway? (y/n): " CONTINUE_ANYWAY
+        if [[ ! "$CONTINUE_ANYWAY" =~ ^[Yy]$ ]]; then
+            log_info "Aborted. Please switch to your main branch first."
+            exit 0
+        fi
     fi
 fi
 
@@ -343,36 +356,41 @@ create_worker_user
 SKIP_COPY=false
 
 if [ -d "$WORKER_PROJECT" ]; then
-    echo ""
-    log_warn "Project files already exist for this user."
-    echo ""
-    echo "Options:"
-    echo "  1) Resume (keep existing files)"
-    echo "  2) Replace (fresh copy from source)"
-    echo "  3) Abort"
-    echo ""
-    read -p "Choose (1/2/3): " EXISTING_OPTION
+    if [ "${AUTO_SYNC:-false}" = true ]; then
+        log_info "Auto-sync mode: resuming existing project files."
+        SKIP_COPY=true
+    else
+        echo ""
+        log_warn "Project files already exist for this user."
+        echo ""
+        echo "Options:"
+        echo "  1) Resume (keep existing files)"
+        echo "  2) Replace (fresh copy from source)"
+        echo "  3) Abort"
+        echo ""
+        read -p "Choose (1/2/3): " EXISTING_OPTION
 
-    case $EXISTING_OPTION in
-        1)
-            log_info "Resuming..."
-            SKIP_COPY=true
-            ;;
-        2)
-            log_info "Replacing..."
-            sudo rm -rf "$WORKER_PROJECT"
-            ;;
-        3)
-            log_info "Aborted."
-            release_lock
-            exit 0
-            ;;
-        *)
-            log_error "Invalid option."
-            release_lock
-            exit 1
-            ;;
-    esac
+        case $EXISTING_OPTION in
+            1)
+                log_info "Resuming..."
+                SKIP_COPY=true
+                ;;
+            2)
+                log_info "Replacing..."
+                sudo rm -rf "$WORKER_PROJECT"
+                ;;
+            3)
+                log_info "Aborted."
+                release_lock
+                exit 0
+                ;;
+            *)
+                log_error "Invalid option."
+                release_lock
+                exit 1
+                ;;
+        esac
+    fi
 fi
 
 # Clone repository and sync working directory
@@ -586,13 +604,15 @@ else
         esac
     }
     _run_session "$CONTINUE_FLAG"
-    if [ $? -ne 0 ] && [ -n "$CONTINUE_FLAG" ]; then
+    _session_rc=$?
+    if [ $_session_rc -ne 0 ] && [ -n "$CONTINUE_FLAG" ]; then
         log_info "No previous conversation found. Starting fresh session..."
         _run_session ""
+        _session_rc=$?
     fi
 fi
 
-CLAUDE_EXIT_CODE=$?
+CLAUDE_EXIT_CODE=${_session_rc:-$?}
 # Keep set +e for the change detection phase to avoid premature exits
 set +e
 
@@ -609,6 +629,30 @@ echo ""
 set +e  # Temporarily disable strict error handling for change detection
 detect_worker_changes
 set -e  # Re-enable strict error handling after safely gathering change information
+
+# Auto-sync mode: non-interactive sync for programmatic use (e.g., EPCTC sandbox)
+if [ "${AUTO_SYNC:-false}" = true ]; then
+    if [ "$NUM_COMMITS" -gt 0 ] || [ -n "$WORKER_CHANGES" ]; then
+        import_commits || log_warn "Commit import failed"
+        if [ -n "$WORKER_CHANGES" ]; then
+            log_info "Syncing uncommitted changes..."
+            if sudo rsync -a \
+                --exclude='.git' --exclude='.epctc' --exclude='node_modules' --exclude='venv' \
+                --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' \
+                --exclude='dist' --exclude='build' --exclude='.next' --exclude='target' \
+                "$WORKER_PROJECT/" "$CURRENT_DIR/"; then
+                sudo chown -R "$(whoami):$(id -gn)" "$CURRENT_DIR"
+                log_info "Sync complete."
+            else
+                log_warn "Rsync failed. Uncommitted changes may not be synced."
+            fi
+        fi
+    else
+        log_info "No changes to sync."
+    fi
+    release_lock
+    exit $CLAUDE_EXIT_CODE
+fi
 
 if show_sync_summary; then
     # No changes detected

@@ -57,6 +57,7 @@ init_clsecure_vars() {
     INSTALL_DEPS=false
     SETUP_SCRIPT=""
     SHELL_ONLY=false  # If true, drop into shell instead of running Claude
+    AUTO_SYNC=false   # If true, non-interactive post-session sync (for programmatic use)
     SKIP_SETUP=false  # If true, skip setup script execution
     FULL_CLONE=false  # If true, clone full git history (slower)
     SESSION_NAME=""   # Session name for multiple environments per project
@@ -81,7 +82,7 @@ init_clsecure_vars() {
 
     # Export variables that modules need
     export WORKER_USER WORKER_HOME WORKER_PROJECT
-    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT PROVIDER KIMI_API_KEY
+    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY AUTO_SYNC SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT PROVIDER KIMI_API_KEY
     export LOCK_FILE LOCK_DIR
     export CONFIG_FILE CONFIG_FILE_ALT PROJECT_CONFIG_FILE
     export RED GREEN YELLOW BLUE CYAN NC
