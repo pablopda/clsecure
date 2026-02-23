@@ -72,6 +72,7 @@ init_clsecure_vars() {
     INSTALL_DEPS=false
     SETUP_SCRIPT=""
     SHELL_ONLY=false  # If true, drop into shell instead of running Claude
+    AUTO_SYNC=false   # If true, non-interactive post-session sync (for programmatic use)
     SKIP_SETUP=false  # If true, skip setup script execution
     FULL_CLONE=false  # If true, clone full git history (slower)
     SESSION_NAME=""   # Session name for multiple environments per project
@@ -96,7 +97,7 @@ init_clsecure_vars() {
 
     # Export variables that modules need
     export WORKER_USER WORKER_HOME WORKER_PROJECT
-    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT PROVIDER KIMI_API_KEY
+    export ISOLATION_MODE ALLOW_NETWORK ALLOW_DOCKER INSTALL_DEPS SETUP_SCRIPT SHELL_ONLY AUTO_SYNC SKIP_SETUP FULL_CLONE SESSION_NAME SESSION_NAME_SANITIZED CLEANUP_HOOK_TIMEOUT SKIP_DOCKER_AUTODETECT PROVIDER KIMI_API_KEY
     export LOCK_FILE LOCK_DIR
     export CONFIG_FILE CONFIG_FILE_ALT PROJECT_CONFIG_FILE
     export RED GREEN YELLOW BLUE CYAN NC
@@ -2629,6 +2630,10 @@ while [[ $# -gt 0 ]]; do
             SHELL_ONLY=true
             shift
             ;;
+        --auto-sync)
+            AUTO_SYNC=true
+            shift
+            ;;
         --skip-setup)
             SKIP_SETUP=true
             shift
@@ -2699,10 +2704,14 @@ fi
 
 if ! git diff-index --quiet HEAD -- 2>/dev/null; then
     log_warn "You have uncommitted changes in your working directory."
-    read -p "Continue anyway? (y/n): " continue_anyway
-    if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-        log_info "Aborted. Please commit or stash your changes first."
-        exit 0
+    if [ "${AUTO_SYNC:-false}" = true ]; then
+        log_info "Auto-sync mode: continuing with uncommitted changes."
+    else
+        read -p "Continue anyway? (y/n): " continue_anyway
+        if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+            log_info "Aborted. Please commit or stash your changes first."
+            exit 0
+        fi
     fi
 fi
 
@@ -2717,14 +2726,18 @@ export ORIGINAL_BRANCH  # Export so it's available in sync.sh functions
 if [[ "$ORIGINAL_BRANCH" =~ ^claude/ ]]; then
     log_warn "You are currently on a temporary Claude branch: $ORIGINAL_BRANCH"
     log_warn "This may prevent proper commit import from the worker session."
-    echo ""
-    echo "It's recommended to switch to your main branch first, for example:"
-    echo "  git checkout main    # or develop, master, etc."
-    echo ""
-    read -p "Continue anyway? (y/n): " CONTINUE_ANYWAY
-    if [[ ! "$CONTINUE_ANYWAY" =~ ^[Yy]$ ]]; then
-        log_info "Aborted. Please switch to your main branch first."
-        exit 0
+    if [ "${AUTO_SYNC:-false}" = true ]; then
+        log_info "Auto-sync mode: continuing on claude/* branch."
+    else
+        echo ""
+        echo "It's recommended to switch to your main branch first, for example:"
+        echo "  git checkout main    # or develop, master, etc."
+        echo ""
+        read -p "Continue anyway? (y/n): " CONTINUE_ANYWAY
+        if [[ ! "$CONTINUE_ANYWAY" =~ ^[Yy]$ ]]; then
+            log_info "Aborted. Please switch to your main branch first."
+            exit 0
+        fi
     fi
 fi
 
@@ -2761,15 +2774,21 @@ create_worker_user
 SKIP_COPY=false
 
 if [ -d "$WORKER_PROJECT" ]; then
-    echo ""
-    log_warn "Project files already exist for this user."
-    echo ""
-    echo "Options:"
-    echo "  1) Resume (keep existing files)"
-    echo "  2) Replace (fresh copy from source)"
-    echo "  3) Abort"
-    echo ""
-    read -p "Choose (1/2/3): " EXISTING_OPTION
+    if [ "${AUTO_SYNC:-false}" = true ]; then
+        log_info "Auto-sync mode: resuming existing project files."
+        SKIP_COPY=true
+        EXISTING_OPTION=1
+    else
+        echo ""
+        log_warn "Project files already exist for this user."
+        echo ""
+        echo "Options:"
+        echo "  1) Resume (keep existing files)"
+        echo "  2) Replace (fresh copy from source)"
+        echo "  3) Abort"
+        echo ""
+        read -p "Choose (1/2/3): " EXISTING_OPTION
+    fi
 
     case $EXISTING_OPTION in
         1)
@@ -3004,13 +3023,15 @@ else
         esac
     }
     _run_session "$CONTINUE_FLAG"
-    if [ $? -ne 0 ] && [ -n "$CONTINUE_FLAG" ]; then
+    _session_rc=$?
+    if [ $_session_rc -ne 0 ] && [ -n "$CONTINUE_FLAG" ]; then
         log_info "No previous conversation found. Starting fresh session..."
         _run_session ""
+        _session_rc=$?
     fi
 fi
 
-CLAUDE_EXIT_CODE=$?
+CLAUDE_EXIT_CODE=${_session_rc:-$?}
 # Keep set +e for the change detection phase to avoid premature exits
 set +e
 
@@ -3027,6 +3048,31 @@ echo ""
 set +e  # Temporarily disable strict error handling for change detection
 detect_worker_changes
 set -e  # Re-enable strict error handling after safely gathering change information
+
+# Auto-sync mode: non-interactive sync for programmatic use (e.g., EPCTC sandbox)
+if [ "${AUTO_SYNC:-false}" = true ]; then
+    if [ "$NUM_COMMITS" -gt 0 ] || [ -n "$WORKER_CHANGES" ]; then
+        import_commits || log_warn "Commit import failed"
+        if [ -n "$WORKER_CHANGES" ]; then
+            log_info "Syncing uncommitted changes..."
+            if sudo rsync -a \
+                --exclude='.git' --exclude='.epctc' --exclude='node_modules' --exclude='venv' \
+                --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' \
+                --exclude='dist' --exclude='build' --exclude='.next' --exclude='target' \
+                "$WORKER_PROJECT/" "$CURRENT_DIR/"; then
+                sudo chown -R "$(whoami):$(id -gn)" "$CURRENT_DIR"
+                log_info "Sync complete."
+            else
+                log_warn "Rsync failed (exit code $?). Uncommitted changes may not be synced."
+            fi
+        fi
+    else
+        log_info "No changes to sync."
+    fi
+    # Keep worker user alive for session reuse. Release lock and exit.
+    release_lock
+    exit $CLAUDE_EXIT_CODE
+fi
 
 if show_sync_summary; then
     # No changes detected
