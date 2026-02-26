@@ -4,72 +4,11 @@
 # Dependency installation for clsecure
 #
 # Dependencies: lib/logging.sh, lib/worker.sh, lib/vars.sh
-# Exports: install_project_dependencies, run_setup_script, copy_npm_cache, install_task_master
+# Exports: install_project_dependencies, run_setup_script
 #
 # Usage:
 #   source lib/deps.sh
 #   install_project_dependencies
-
-# Copy npm cache from invoking user to worker user
-# This speeds up npm installs significantly by avoiding re-downloads
-copy_npm_cache() {
-    local source_cache="${HOME}/.npm"
-    local dest_cache="${WORKER_HOME}/.npm"
-
-    if [ ! -d "$source_cache" ]; then
-        log_info "No npm cache found at $source_cache, skipping cache copy."
-        return 0
-    fi
-
-    if [ -d "$dest_cache" ]; then
-        log_info "Worker npm cache already exists."
-        return 0
-    fi
-
-    log_info "Copying npm cache to worker user..."
-    sudo cp -r "$source_cache" "$dest_cache"
-    sudo chown -R "$WORKER_USER:$WORKER_USER" "$dest_cache"
-    log_info "npm cache copied successfully."
-}
-
-# Install task-master-ai with retry logic
-# Args: $1 = max retries (default 2)
-install_task_master() {
-    local max_retries="${1:-2}"
-    local attempt=1
-
-    log_step "Checking task-master-ai..."
-
-    # Check if already installed
-    if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && command -v task-master" &>/dev/null; then
-        log_info "task-master-ai already installed."
-        return 0
-    fi
-
-    # Copy npm cache first to speed up installation
-    copy_npm_cache
-
-    while [ $attempt -le $max_retries ]; do
-        log_info "Installing task-master-ai (attempt $attempt/$max_retries)..."
-
-        # Install with increased timeout (5 minutes)
-        if sudo -u "$WORKER_USER" bash -c "cd && source ~/.bashrc && npm install -g task-master-ai --fetch-timeout=300000 --fetch-retries=3" 2>&1; then
-            log_info "task-master-ai installed successfully."
-            return 0
-        fi
-
-        log_warn "Attempt $attempt failed."
-        attempt=$((attempt + 1))
-
-        if [ $attempt -le $max_retries ]; then
-            log_info "Retrying in 5 seconds..."
-            sleep 5
-        fi
-    done
-
-    log_warn "Failed to install task-master-ai after $max_retries attempts. Continuing anyway..."
-    return 1
-}
 
 # Install project dependencies (npm/pip)
 install_project_dependencies() {

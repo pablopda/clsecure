@@ -527,9 +527,6 @@ else
     exit 1
 fi
 
-# Install task-master-ai (with npm cache copy and retry)
-install_task_master 2
-
 # Run setup script if configured (optional - failures should not terminate script)
 if [ "$SKIP_SETUP" = true ]; then
     log_info "Skipping setup script (--skip-setup)"
