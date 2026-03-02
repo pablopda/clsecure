@@ -1,0 +1,257 @@
+#!/bin/bash
+# clsecure-epctc-test - Run EPCTC tests in clsecure sandbox
+#
+# Usage: clsecure-epctc-test [OPTIONS] -- <test-args>
+#
+# Options:
+#   --session NAME          Session name (auto-generated if not provided)
+#   --mode MODE             Isolation mode: user, namespace (default: namespace)
+#   --allow-network         Allow network access
+#   --allow-docker          Allow Docker access
+#   --test-type TYPE        Test type: unit, integration, e2e, security
+#   --test-pattern PATTERN  Test file pattern
+#   --coverage              Enable coverage collection
+#   --no-coverage           Disable coverage
+#   --parallel N            Run N test sessions in parallel
+#   --auto-profile          Auto-detect risk profile
+#   --config FILE           Test configuration file
+#   --list-sessions         List test sessions
+#   --cleanup [DAYS]        Cleanup sessions older than DAYS (default: 7)
+#   -h, --help              Show help
+
+set -euo pipefail
+
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Source required modules
+source "$PROJECT_ROOT/lib/vars.sh"
+source "$PROJECT_ROOT/lib/logging.sh"
+source "$PROJECT_ROOT/lib/sync.sh"
+source "$SCRIPT_DIR/test-integration.sh"
+
+# Initialize variables
+init_clsecure_vars
+
+# Parse arguments
+SESSION_NAME=""
+ISOLATION_MODE="namespace"
+ALLOW_NETWORK=false
+ALLOW_DOCKER=false
+TEST_TYPE="auto"
+TEST_PATTERN=""
+COVERAGE_ENABLED=true
+OUTPUT_FORMAT="junit"
+PARALLEL=0
+AUTO_PROFILE=false
+CONFIG_FILE="$DEFAULT_TEST_CONFIG"
+LIST_SESSIONS=false
+CLEANUP_DAYS=""
+SHOW_HELP=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --session)
+            SESSION_NAME="$2"
+            shift 2
+            ;;
+        --mode)
+            ISOLATION_MODE="$2"
+            shift 2
+            ;;
+        --allow-network)
+            ALLOW_NETWORK=true
+            shift
+            ;;
+        --allow-docker)
+            ALLOW_DOCKER=true
+            shift
+            ;;
+        --test-type)
+            TEST_TYPE="$2"
+            shift 2
+            ;;
+        --test-pattern)
+            TEST_PATTERN="$2"
+            shift 2
+            ;;
+        --coverage)
+            COVERAGE_ENABLED=true
+            shift
+            ;;
+        --no-coverage)
+            COVERAGE_ENABLED=false
+            shift
+            ;;
+        --parallel)
+            PARALLEL="$2"
+            shift 2
+            ;;
+        --auto-profile)
+            AUTO_PROFILE=true
+            shift
+            ;;
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --list-sessions)
+            LIST_SESSIONS=true
+            shift
+            ;;
+        --cleanup)
+            CLEANUP_DAYS="${2:-7}"
+            shift $([ -n "${2:-}" ] && echo 2 || echo 1)
+            ;;
+        -h|--help)
+            SHOW_HELP=true
+            shift
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            log_error "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Show help
+if [ "$SHOW_HELP" = true ]; then
+    sed -n '/^#/p' "$0" | sed 's/^# //' | sed 's/^#//'
+    exit 0
+fi
+
+# List sessions
+if [ "$LIST_SESSIONS" = true ]; then
+    list_test_sessions
+    exit 0
+fi
+
+# Cleanup old sessions
+if [ -n "$CLEANUP_DAYS" ]; then
+    cleanup_test_sessions "$CLEANUP_DAYS"
+    exit 0
+fi
+
+# Auto-detect profile if requested
+if [ "$AUTO_PROFILE" = true ] && [ -n "$TEST_PATTERN" ]; then
+    RISK_PROFILE=$(detect_test_risk_profile "$TEST_PATTERN" "$CONFIG_FILE")
+    log_info "Detected risk profile: $RISK_PROFILE"
+    
+    ISOLATION_CONFIG=$(get_isolation_for_profile "$RISK_PROFILE" "$CONFIG_FILE")
+    ISOLATION_MODE=$(echo "$ISOLATION_CONFIG" | jq -r '.mode')
+    ALLOW_NETWORK=$(echo "$ISOLATION_CONFIG" | jq -r '.network')
+    ALLOW_DOCKER=$(echo "$ISOLATION_CONFIG" | jq -r '.docker')
+fi
+
+# Generate session name if not provided
+SESSION_NAME="${SESSION_NAME:-$(generate_test_session_name "$TEST_TYPE")}"
+
+# Initialize test session
+log_step "Initializing test session: $SESSION_NAME"
+
+ISOLATION_JSON=$(jq -n \
+    --arg mode "$ISOLATION_MODE" \
+    --argjson network "$ALLOW_NETWORK" \
+    --argjson docker "$ALLOW_DOCKER" \
+    '{mode: $mode, network: $network, docker: $docker}')
+
+RESULTS_DIR=$(init_test_session "$SESSION_NAME" "$TEST_TYPE" "$TEST_PATTERN" "$ISOLATION_JSON")
+
+log_info "Test type: $TEST_TYPE"
+log_info "Isolation: $ISOLATION_MODE"
+log_info "Network: $ALLOW_NETWORK"
+log_info "Docker: $ALLOW_DOCKER"
+log_info "Results: $RESULTS_DIR"
+
+# Prepare test command
+TEST_CMD="/epctc-test"
+[ "$TEST_TYPE" != "auto" ] && TEST_CMD="$TEST_CMD '$TEST_TYPE'"
+[ -n "$TEST_PATTERN" ] && TEST_CMD="$TEST_CMD '$TEST_PATTERN'"
+
+# Add coverage flags
+if [ "$COVERAGE_ENABLED" = true ]; then
+    TEST_CMD="$TEST_CMD --coverage"
+fi
+
+# Build clsecure flags
+NETWORK_FLAG=$([ "$ALLOW_NETWORK" = true ] && echo "--allow-network" || echo "")
+DOCKER_FLAG=$([ "$ALLOW_DOCKER" = true ] && echo "--allow-docker" || echo "")
+
+log_step "Starting test execution in sandbox..."
+
+# Update status to running
+update_test_session "$SESSION_NAME" "running"
+
+# Run tests in clsecure sandbox
+TEST_EXIT_CODE=0
+clsecure \
+    --session "$SESSION_NAME" \
+    --mode "$ISOLATION_MODE" \
+    $NETWORK_FLAG \
+    $DOCKER_FLAG \
+    --shell \
+    --skip-setup \
+    -- \
+    -c "
+        cd '\$WORKER_PROJECT' && \
+        echo '========================================' && \
+        echo 'Running tests in isolated environment' && \
+        echo 'Session: $SESSION_NAME' && \
+        echo 'Worker: \$USER' && \
+        echo '========================================' && \
+        echo '' && \
+        $TEST_CMD && \
+        echo '' && \
+        echo '========================================' && \
+        echo 'Tests completed, syncing results...' && \
+        echo '========================================' && \
+        mkdir -p '$TEST_RESULTS_DIR/$SESSION_NAME' && \
+        # Copy test results to sync location
+        for f in junit.xml coverage.xml .coverage; do
+            [ -f \"\$f\" ] && cp \"\$f\" '$TEST_RESULTS_DIR/$SESSION_NAME/' 2>/dev/null || true
+        done && \
+        [ -d test-results ] && cp -r test-results '$TEST_RESULTS_DIR/$SESSION_NAME/' 2>/dev/null || true && \
+        [ -d coverage ] && cp -r coverage '$TEST_RESULTS_DIR/$SESSION_NAME/' 2>/dev/null || true && \
+        [ -d htmlcov ] && cp -r htmlcov '$TEST_RESULTS_DIR/$SESSION_NAME/' 2>/dev/null || true
+    " > "$RESULTS_DIR/clsecure.log" 2>&1 || TEST_EXIT_CODE=$?
+
+# Update final status
+update_test_session "$SESSION_NAME" "completed" "$TEST_EXIT_CODE"
+
+# Display results
+echo ""
+log_step "Test Execution Complete"
+log_info "Exit code: $TEST_EXIT_CODE"
+
+# Show summary if available
+if [ -f "$RESULTS_DIR/summary.json" ]; then
+    echo ""
+    cat "$RESULTS_DIR/summary.json" | jq -r '
+        "Test Summary:",
+        "  Tests: \(.tests)",
+        "  Failures: \(.failures)",
+        "  Errors: \(.errors)",
+        "  Skipped: \(.skipped)",
+        "  Duration: \(.duration)s",
+        (if .coverage then "  Coverage: \(.coverage)%" else empty end),
+        "  Status: \(.passed | if . then "PASS" else "FAIL" end)"
+    '
+fi
+
+# Check quality gates
+if command -v check_test_quality_gates &>/dev/null; then
+    check_test_quality_gates "$RESULTS_DIR" || true
+fi
+
+# Update EPCTC gate
+update_epctc_gate "$SESSION_NAME" "test"
+
+echo ""
+log_info "Results available in: $RESULTS_DIR"
+
+exit $TEST_EXIT_CODE

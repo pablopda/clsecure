@@ -1,0 +1,78 @@
+# EPCTC Test Configuration for clsecure Integration
+# Copy this file to .clsecure/epctc-test-config and customize
+
+[test-risk-profiles]
+# Tier 1: Safe - Standard unit tests with no external dependencies
+# These tests run with maximum isolation and no network access
+tier_1_patterns = "test_*.py,*_test.go,*_spec.js,*.test.ts,*.test.tsx,Test*.java,*Tests.cs"
+tier_1_isolation = "namespace"
+tier_1_network = false
+tier_1_docker = false
+tier_1_readonly = false
+
+# Tier 2: Medium - Integration tests with external APIs
+# These tests need network access but no Docker
+tier_2_patterns = "test_integration*,*_integration.py,tests/integration/*,test_api*,*_api_test.py"
+tier_2_isolation = "namespace"
+tier_2_network = true
+tier_2_docker = false
+tier_2_readonly = false
+
+# Tier 3: High - Full E2E with databases, browsers
+# These tests need full environment access including Docker
+tier_3_patterns = "test_e2e*,puppeteer*,cypress*,playwright*,selenium*,tests/e2e/*,tests/functional/*"
+tier_3_isolation = "namespace"
+tier_3_network = true
+tier_3_docker = true
+tier_3_readonly = false
+
+# Tier 4: Critical - Security tests, fuzzing, mutation testing
+# These tests run in high isolation with read-only filesystem
+tier_4_patterns = "test_security*,fuzz*,property_test*,mutation*,test_*auth*,test_*crypt*,test_*inject*"
+tier_4_isolation = "namespace"
+tier_4_network = false
+tier_4_docker = false
+tier_4_readonly = true
+
+[quality-gates]
+# Minimum code coverage percentage
+test-coverage-threshold = 80
+
+# Minimum number of tests required
+min-test-count = 10
+
+# Maximum flaky test rate (percentage)
+max-flaky-rate = 5
+
+# Require security test patterns for auth/crypto code
+require-security-tests = true
+
+[test-execution]
+# Default maximum parallel test sessions
+max-parallel = 4
+
+# Default test timeout in seconds
+test-timeout = 300
+
+# Auto-detect risk profiles by default
+auto-profile = true
+
+# Coverage collection enabled by default
+coverage-enabled = true
+
+[test-result-sync]
+# Files to sync from worker to host
+sync-patterns = "junit.xml,coverage.xml,.coverage,test-results/*,coverage/*,htmlcov/*"
+
+# Retain test results for N days
+retention-days = 30
+
+[epctc-integration]
+# Update EPCTC gates after test execution
+update-gates = true
+
+# Gate types to update
+gate-types = "test,quality,coverage"
+
+# Fail EPCTC workflow on test failure
+fail-on-test-failure = true

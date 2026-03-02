@@ -1,0 +1,224 @@
+#!/bin/bash
+# clsecure-epctc-test-parallel - Run EPCTC tests in parallel isolated sandboxes
+#
+# Usage: clsecure-epctc-test-parallel [OPTIONS] [CONFIG_FILE]
+#
+# Options:
+#   --max-parallel N     Maximum parallel sessions (default: 4)
+#   --suites LIST        Comma-separated list of test suites
+#   --config FILE        JSON configuration file for test suites
+#   --wait               Wait for all to complete before exiting
+#   --aggregate          Aggregate results after completion
+#   -v, --verbose        Verbose output
+
+set -euo pipefail
+
+# Script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Source integration module
+source "$SCRIPT_DIR/test-integration.sh"
+
+# Defaults
+MAX_PARALLEL=4
+SUITES=""
+CONFIG_FILE=""
+WAIT_COMPLETION=true
+AGGREGATE=true
+VERBOSE=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --max-parallel)
+            MAX_PARALLEL="$2"
+            shift 2
+            ;;
+        --suites)
+            SUITES="$2"
+            shift 2
+            ;;
+        --config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        --wait)
+            WAIT_COMPLETION=true
+            shift
+            ;;
+        --no-wait)
+            WAIT_COMPLETION=false
+            shift
+            ;;
+        --aggregate)
+            AGGREGATE=true
+            shift
+            ;;
+        --no-aggregate)
+            AGGREGATE=false
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            CONFIG_FILE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Logging
+log_info() {
+    echo "[parallel-test] $1"
+}
+
+log_verbose() {
+    [ "$VERBOSE" = true ] && echo "[parallel-test] $1"
+}
+
+# Load test configuration
+load_test_config() {
+    local config_file="$1"
+    
+    if [ -f "$config_file" ]; then
+        cat "$config_file"
+    elif [ -n "$SUITES" ]; then
+        # Build config from suite list
+        local suites_json="["
+        local first=true
+        IFS=',' read -ra SUITE_ARRAY <<< "$SUITES"
+        for suite in "${SUITE_ARRAY[@]}"; do
+            [ "$first" = true ] || suites_json+=","
+            first=false
+            suites_json+="{\"type\":\"$suite\",\"pattern\":\"\"}"
+        done
+        suites_json+="]"
+        echo "$suites_json"
+    else
+        # Default configuration
+        cat <<'EOF'
+[
+    {"type": "unit", "pattern": "", "isolation": {"mode": "namespace", "network": false, "docker": false}},
+    {"type": "integration", "pattern": "", "isolation": {"mode": "namespace", "network": true, "docker": false}},
+    {"type": "e2e", "pattern": "", "isolation": {"mode": "namespace", "network": true, "docker": true}}
+]
+EOF
+    fi
+}
+
+# Launch a single test session
+launch_test_session() {
+    local config="$1"
+    
+    local test_type=$(echo "$config" | jq -r '.type')
+    local test_pattern=$(echo "$config" | jq -r '.pattern // ""')
+    local isolation=$(echo "$config" | jq -r '.isolation.mode // "namespace"')
+    local network=$(echo "$config" | jq -r '.isolation.network // false')
+    local docker=$(echo "$config" | jq -r '.isolation.docker // false')
+    
+    local session_name=$(generate_test_session_name "$test_type")
+    
+    log_info "[$session_name] Launching $test_type tests..."
+    log_verbose "  Isolation: $isolation, Network: $network, Docker: $docker"
+    
+    # Initialize session
+    local isolation_json=$(jq -n \
+        --arg mode "$isolation" \
+        --argjson network "$network" \
+        --argjson docker "$docker" \
+        '{mode: $mode, network: $network, docker: $docker}')
+    
+    init_test_session "$session_name" "$test_type" "$test_pattern" "$isolation_json" > /dev/null
+    
+    # Build clsecure command
+    local network_flag=$([ "$network" = "true" ] && echo "--allow-network" || echo "")
+    local docker_flag=$([ "$docker" = "true" ] && echo "--allow-docker" || echo "")
+    
+    # Launch in background
+    (
+        local exit_code=0
+        clsecure \
+            --session "$session_name" \
+            --mode "$isolation" \
+            $network_flag \
+            $docker_flag \
+            --shell \
+            --skip-setup \
+            -- \
+            -c "/epctc-test '$test_type' '$test_pattern'" \
+            > "$CURRENT_DIR/$TEST_RESULTS_DIR/$session_name/clsecure.log" 2>&1 \
+            || exit_code=$?
+        
+        update_test_session "$session_name" "completed" "$exit_code"
+        
+        log_info "[$session_name] Completed (exit: $exit_code)"
+    ) &
+    
+    echo $!
+}
+
+# Main execution
+main() {
+    log_info "EPCTC Parallel Test Execution"
+    log_info "Max parallel: $MAX_PARALLEL"
+    
+    # Load test configuration
+    local test_configs=$(load_test_config "$CONFIG_FILE")
+    local num_tests=$(echo "$test_configs" | jq 'length')
+    
+    log_info "Test suites: $num_tests"
+    
+    # Launch test sessions
+    local pids=()
+    local session_names=()
+    
+    for ((i=0; i<num_tests; i++)); do
+        local config=$(echo "$test_configs" | jq ".[$i]")
+        local pid=$(launch_test_session "$config")
+        local test_type=$(echo "$config" | jq -r '.type')
+        local session_name=$(generate_test_session_name "$test_type")
+        
+        pids+=("$pid")
+        session_names+=("$session_name")
+        
+        # Limit parallelism
+        if [ ${#pids[@]} -ge "$MAX_PARALLEL" ]; then
+            log_verbose "Waiting for slot (max: $MAX_PARALLEL)..."
+            wait "${pids[0]}"
+            pids=("${pids[@]:1}")
+        fi
+    done
+    
+    # Wait for all to complete
+    if [ "$WAIT_COMPLETION" = true ]; then
+        log_info "Waiting for all test sessions to complete..."
+        for pid in "${pids[@]}"; do
+            wait "$pid"
+        done
+        
+        # Aggregate results
+        if [ "$AGGREGATE" = true ]; then
+            echo ""
+            aggregate_parallel_results "${session_names[@]}"
+        fi
+    else
+        log_info "Test sessions launched in background"
+        log_info "Sessions: ${session_names[*]}"
+        log_info "Monitor with: clsecure-epctc-test --list-sessions"
+    fi
+}
+
+# Check if we have jq
+if ! command -v jq &>/dev/null; then
+    log_error "jq is required but not installed"
+    exit 1
+fi
+
+main

@@ -1,0 +1,184 @@
+#!/bin/bash
+# epctc-test-enhanced - Enhanced EPCTC test command with clsecure integration
+#
+# This script wraps the standard /epctc-test command with automatic
+# sandbox isolation based on test risk profiles.
+#
+# Usage: epctc-test-enhanced [OPTIONS] [TEST_TYPE] [TEST_PATTERN]
+
+set -euo pipefail
+
+# Configuration
+CLSECURE_BIN="${CLSECURE_BIN:-clsecure}"
+CLSECURE_TEST_BIN="${CLSECURE_TEST_BIN:-clsecure-epctc-test}"
+EPCTC_TEST_BIN="${EPCTC_TEST_BIN:-/epctc-test}"
+
+# Parse arguments
+TEST_TYPE="${1:-auto}"
+TEST_PATTERN="${2:-}"
+USE_SANDBOX=true
+AUTO_DETECT=true
+FORCE_ISOLATION=""
+VERBOSE=false
+
+# Shift to parse remaining options
+shift 2 2>/dev/null || true
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-sandbox)
+            USE_SANDBOX=false
+            shift
+            ;;
+        --mode)
+            FORCE_ISOLATION="$2"
+            shift 2
+            ;;
+        --verbose|-v)
+            VERBOSE=true
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# Logging functions
+log_info() {
+    echo "[epctc-test] $1"
+}
+
+log_debug() {
+    [ "$VERBOSE" = true ] && echo "[epctc-test] DEBUG: $1"
+}
+
+log_error() {
+    echo "[epctc-test] ERROR: $1" >&2
+}
+
+# Check if running inside clsecure sandbox
+check_in_sandbox() {
+    if [ -n "${CLSECURE_SESSION:-}" ] || [ -n "${WORKER_USER:-}" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Detect test risk profile
+detect_profile() {
+    local test_type="$1"
+    local test_pattern="$2"
+    
+    # Check for high-risk patterns
+    case "$test_type" in
+        security|mutation|fuzz|property)
+            echo "tier_4"
+            return
+            ;;
+        e2e|browser|ui|integration)
+            echo "tier_3"
+            return
+            ;;
+    esac
+    
+    # Check test pattern
+    case "$test_pattern" in
+        *security*|*auth*|*crypt*|*inject*|*fuzz*)
+            echo "tier_4"
+            return
+            ;;
+        *e2e*|*puppeteer*|*cypress*|*playwright*|*selenium*)
+            echo "tier_3"
+            return
+            ;;
+        *integration*|*api*)
+            echo "tier_2"
+            return
+            ;;
+    esac
+    
+    # Default to tier 1 (unit tests)
+    echo "tier_1"
+}
+
+# Get isolation flags for profile
+get_isolation_flags() {
+    local profile="$1"
+    
+    case "$profile" in
+        tier_4)
+            echo "--mode namespace"
+            ;;
+        tier_3)
+            echo "--mode namespace --allow-network --allow-docker"
+            ;;
+        tier_2)
+            echo "--mode namespace --allow-network"
+            ;;
+        tier_1|*)
+            echo "--mode namespace"
+            ;;
+    esac
+}
+
+# Main execution
+main() {
+    log_info "EPCTC Test (Enhanced with clsecure)"
+    log_debug "Test type: $TEST_TYPE"
+    log_debug "Test pattern: $TEST_PATTERN"
+    
+    # Check if already in sandbox
+    if check_in_sandbox; then
+        log_debug "Already running in sandbox, executing directly"
+        exec $EPCTC_TEST_BIN "$TEST_TYPE" "$TEST_PATTERN"
+    fi
+    
+    # Check if sandbox is available and requested
+    if [ "$USE_SANDBOX" = false ]; then
+        log_info "Sandbox disabled, running directly"
+        exec $EPCTC_TEST_BIN "$TEST_TYPE" "$TEST_PATTERN"
+    fi
+    
+    if ! command -v "$CLSECURE_BIN" &>/dev/null; then
+        log_info "clsecure not available, running directly"
+        exec $EPCTC_TEST_BIN "$TEST_TYPE" "$TEST_PATTERN"
+    fi
+    
+    # Auto-detect risk profile
+    if [ "$AUTO_DETECT" = true ] && [ -z "$FORCE_ISOLATION" ]; then
+        RISK_PROFILE=$(detect_profile "$TEST_TYPE" "$TEST_PATTERN")
+        log_info "Detected risk profile: $RISK_PROFILE"
+        
+        ISOLATION_FLAGS=$(get_isolation_flags "$RISK_PROFILE")
+        log_info "Isolation: $ISOLATION_FLAGS"
+    elif [ -n "$FORCE_ISOLATION" ]; then
+        ISOLATION_FLAGS="--mode $FORCE_ISOLATION"
+    fi
+    
+    # Launch in clsecure
+    log_info "Launching tests in isolated sandbox..."
+    
+    if command -v "$CLSECURE_TEST_BIN" &>/dev/null; then
+        # Use enhanced wrapper if available
+        exec "$CLSECURE_TEST_BIN" \
+            $ISOLATION_FLAGS \
+            --test-type "$TEST_TYPE" \
+            --test-pattern "$TEST_PATTERN" \
+            --auto-profile
+    else
+        # Fallback to direct clsecure invocation
+        SESSION_NAME="epctc-test-$(date +%s)"
+        
+        eval "$CLSECURE_BIN \
+            --session '$SESSION_NAME' \
+            $ISOLATION_FLAGS \
+            --shell \
+            --skip-setup \
+            -- \
+            -c \"\$EPCTC_TEST_BIN '$TEST_TYPE' '$TEST_PATTERN'\""
+    fi
+}
+
+# Run main
+main
