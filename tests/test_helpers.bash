@@ -17,11 +17,13 @@ setup_test() {
     TEST_DIR=$(mktemp -d)
     export TEST_DIR
 
-    # Isolate HOME to prevent tests from modifying real user config
+    # Isolate HOME and XDG dirs to prevent tests from using real user config
     ORIG_HOME="$HOME"
     export ORIG_HOME
     HOME="$TEST_DIR/home"
     export HOME
+    # Unset XDG_CONFIG_HOME so CONFIG_FILE resolves to $HOME/.config
+    unset XDG_CONFIG_HOME
 
     # Create the fake home directory structure
     mkdir -p "$HOME/.config/clsecure"
