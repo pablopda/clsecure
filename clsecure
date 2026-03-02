@@ -1182,38 +1182,73 @@ copy_submodules() {
 
     if [ -f "$CURRENT_DIR/.gitmodules" ] && [ -d "$source_modules_dir" ]; then
         log_info "Copying submodules from source..."
-        
-        # Copy .git/modules directory (contains submodule git repositories)
+
+        # Copy .git/modules directory (contains ALL submodule git repositories, including nested)
         if ! sudo cp -r "$source_modules_dir" "$WORKER_PROJECT/.git/modules" 2>/dev/null; then
             log_warn "Failed to copy submodules - they may not work correctly"
             return 1
         fi
-        
-        # Fix .git pointers in submodule directories to point to local .git/modules
-        # Use git config to properly read submodule paths (more robust than parsing .gitmodules)
-        # Use process substitution to avoid subshell issues
-        while IFS= read -r line; do
-            # Line format: "submodule.<name>.path <path>"
-            # Extract path value (everything after the FIRST space, not last)
-            # Use read with IFS to split on first space only
-            IFS=' ' read -r _ submodule_path <<< "$line"
-            # Trim leading/trailing whitespace
-            submodule_path="${submodule_path#"${submodule_path%%[![:space:]]*}"}"
-            submodule_path="${submodule_path%"${submodule_path##*[![:space:]]}"}"
-            
-            if [ -n "$submodule_path" ] && [ -d "$WORKER_PROJECT/$submodule_path" ]; then
-                # Git stores submodules in .git/modules using the path name
-                gitdir_path="$WORKER_PROJECT/.git/modules/$submodule_path"
-                if [ -d "$gitdir_path" ]; then
-                    # Remove existing .git file or directory
-                    sudo rm -rf "$WORKER_PROJECT/$submodule_path/.git" 2>/dev/null || true
-                    # Create .git file pointing to .git/modules
-                    echo "gitdir: $gitdir_path" | sudo tee "$WORKER_PROJECT/$submodule_path/.git" > /dev/null
-                fi
-            fi
-        done < <(git config --file "$CURRENT_DIR/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+
+        # Recursively fix .git pointers for all submodules (including nested)
+        _fix_submodule_pointers "$CURRENT_DIR" "$WORKER_PROJECT" "$WORKER_PROJECT/.git/modules"
     fi
     return 0
+}
+
+# Recursively fix .git pointer files in submodule directories.
+# The cp -r above already copied all nested git databases; this function
+# creates the .git pointer files that link each submodule worktree to its
+# git database under .git/modules/.
+#
+# Git nested module layout:
+#   .git/modules/<parent_path>/              ← parent submodule git db
+#   .git/modules/<parent_path>/modules/<child_path>/  ← nested submodule git db
+#
+# Args:
+#   $1 = source directory on host (to read .gitmodules from)
+#   $2 = corresponding worker directory
+#   $3 = git modules directory for this level
+_fix_submodule_pointers() {
+    local source_dir="$1"
+    local worker_dir="$2"
+    local modules_dir="$3"
+    local line config_key submodule_path submodule_name gitdir_path nested_modules
+
+    [ -f "$source_dir/.gitmodules" ] || return 0
+
+    while IFS= read -r line; do
+        # Line format: "submodule.<name>.path <path>"
+        IFS=' ' read -r config_key submodule_path <<< "$line"
+        # Trim leading/trailing whitespace
+        submodule_path="${submodule_path#"${submodule_path%%[![:space:]]*}"}"
+        submodule_path="${submodule_path%"${submodule_path##*[![:space:]]}"}"
+        # Extract submodule name from key: "submodule.<name>.path" -> "<name>"
+        # Git stores modules under .git/modules/<name>/, which may differ from <path>
+        # after a git mv or manual .gitmodules edit.
+        submodule_name="${config_key#submodule.}"
+        submodule_name="${submodule_name%.path}"
+
+        if [ -n "$submodule_path" ] && [ -d "$worker_dir/$submodule_path" ]; then
+            gitdir_path="$modules_dir/$submodule_name"
+            if [ -d "$gitdir_path" ]; then
+                # Remove existing .git file or directory and create pointer
+                sudo rm -rf "$worker_dir/$submodule_path/.git" 2>/dev/null || true
+                if ! echo "gitdir: $gitdir_path" | sudo tee "$worker_dir/$submodule_path/.git" > /dev/null 2>&1; then
+                    log_warn "Failed to create .git pointer for submodule: $submodule_path"
+                    continue
+                fi
+
+                # Recurse into this submodule for its own nested submodules
+                nested_modules="$gitdir_path/modules"
+                if [ -f "$source_dir/$submodule_path/.gitmodules" ] && [ -d "$nested_modules" ]; then
+                    _fix_submodule_pointers \
+                        "$source_dir/$submodule_path" \
+                        "$worker_dir/$submodule_path" \
+                        "$nested_modules"
+                fi
+            fi
+        fi
+    done < <(git config --file "$source_dir/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
 }
 
 # Copy git hooks from source repo and host user's global hooks to worker
