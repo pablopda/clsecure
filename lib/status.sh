@@ -17,7 +17,7 @@ show_worker_status() {
     local host_project="$CURRENT_DIR"
     local host_is_git=false host_branch="" host_short=""
 
-    if [ -d "$host_project/.git" ]; then
+    if git -C "$host_project" rev-parse --git-dir &>/dev/null; then
         host_is_git=true
         host_branch=$(git -C "$host_project" branch --show-current 2>/dev/null || echo "detached")
         host_short=$(git -C "$host_project" rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -182,7 +182,7 @@ show_worker_status() {
             merge_project="$wpp"
         fi
         local can_check_merge=false
-        if [ -d "$merge_project/.git" ]; then
+        if git -C "$merge_project" rev-parse --git-dir &>/dev/null; then
             can_check_merge=true
         fi
 

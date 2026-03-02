@@ -37,6 +37,9 @@ source "${LIB_DIR}/isolation.sh"
 # Level 5: Depends on logging + git + worker + vars
 source "${LIB_DIR}/sync.sh"
 
+# Level 5.5: Depends on logging + git + worker + vars
+source "${LIB_DIR}/worktree.sh"
+
 # Level 6: Depends on logging + worker + vars
 source "${LIB_DIR}/cleanup.sh"
 
@@ -279,7 +282,7 @@ check_isolation_requirements
 # Verify git repository
 log_step "Verifying git repository..."
 
-if [ ! -d ".git" ]; then
+if ! git rev-parse --git-dir &>/dev/null; then
     log_error "Not a git repository. Please run from a git project root."
     exit 1
 fi
@@ -404,9 +407,19 @@ if [ "$SKIP_COPY" = false ]; then
         exit 1
     fi
 
-    if ! clone_repository; then
-        release_lock
-        exit 1
+    if is_git_worktree "$CURRENT_DIR"; then
+        if ! clone_worktree_repository; then
+            log_warn "Worktree clone failed, trying standard clone..."
+            if ! clone_repository; then
+                release_lock
+                exit 1
+            fi
+        fi
+    else
+        if ! clone_repository; then
+            release_lock
+            exit 1
+        fi
     fi
 
     # Record base commit for accurate branch creation during import
