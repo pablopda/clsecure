@@ -2108,6 +2108,7 @@ import_uncommitted_changes() {
 
     log_info "Syncing uncommitted changes..."
     sudo rsync -av \
+        --chown="$(whoami):$(id -gn)" \
         --exclude='.git' \
         --exclude='node_modules' \
         --exclude='venv' \
@@ -2119,11 +2120,11 @@ import_uncommitted_changes() {
         --exclude='.next' \
         --exclude='target' \
         "$WORKER_PROJECT/" "$CURRENT_DIR/"
-    
+
     sudo chown -R "$(whoami):$(id -gn)" "$CURRENT_DIR"
-    
+
     log_info "✓ Uncommitted changes applied."
-    
+
     echo ""
     git status --short
     echo ""
@@ -2441,8 +2442,9 @@ sync_to_worktree_path() {
     
     log_info "Syncing uncommitted changes to worktree: $worktree_path"
     
-    # Rsync files (not git objects)
+    # Rsync files (not git objects), with atomic ownership
     sudo rsync -av \
+        --chown="$(whoami):$(id -gn)" \
         --exclude='.git' \
         --exclude='node_modules' \
         --exclude='venv' \
@@ -2454,10 +2456,9 @@ sync_to_worktree_path() {
         --exclude='.next' \
         --exclude='target' \
         "$WORKER_PROJECT/" "$worktree_path/"
-    
-    # Fix ownership
+
     sudo chown -R "$(whoami):$(id -gn)" "$worktree_path"
-    
+
     log_info "Worktree synced successfully."
     return 0
 }
@@ -3544,6 +3545,7 @@ if [ "${AUTO_SYNC:-false}" = true ]; then
         if [ -n "$WORKER_CHANGES" ]; then
             log_info "Syncing uncommitted changes..."
             if sudo rsync -a \
+                --chown="$(whoami):$(id -gn)" \
                 --exclude='.git' --exclude='.epctc' --exclude='node_modules' --exclude='venv' \
                 --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' \
                 --exclude='dist' --exclude='build' --exclude='.next' --exclude='target' \

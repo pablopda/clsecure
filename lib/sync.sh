@@ -146,6 +146,7 @@ import_uncommitted_changes() {
 
     log_info "Syncing uncommitted changes..."
     sudo rsync -av \
+        --chown="$(whoami):$(id -gn)" \
         --exclude='.git' \
         --exclude='node_modules' \
         --exclude='venv' \
@@ -157,7 +158,7 @@ import_uncommitted_changes() {
         --exclude='.next' \
         --exclude='target' \
         "$WORKER_PROJECT/" "$CURRENT_DIR/"
-    
+
     sudo chown -R "$(whoami):$(id -gn)" "$CURRENT_DIR"
     
     log_info "✓ Uncommitted changes applied."
